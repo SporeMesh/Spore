@@ -628,7 +628,7 @@ DEPTH = 8  # number of transformer layers
 def _auto_batch_size():
     """Pick batch size based on available memory."""
     if _USE_CUDA:
-        mem_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+        mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         # ~128 for 80GB (H100), scale linearly down, minimum 8
         bs = max(8, int(128 * mem_gb / 80))
         # Round down to power of 2 for clean grad accumulation
