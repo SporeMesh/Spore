@@ -68,7 +68,9 @@ class ReputationStore:
     """SQLite-backed reputation tracking for network nodes."""
 
     def __init__(self, db_path: str | Path = ":memory:"):
-        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self.conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=10)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(REPUTATION_SCHEMA)
 
