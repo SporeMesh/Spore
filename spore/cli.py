@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import logging
+import logging.handlers
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from rich.console import Console
 from .node import SPORE_DIR, NodeConfig, SporeNode
 from .record import generate_keypair
 
+log = logging.getLogger(__name__)
 console = Console()
 
 
@@ -159,10 +161,16 @@ def run(
                 server = uvicorn.Server(uvi_config)
 
                 async def _run_explorer():
-                    try:
-                        await server.serve()
-                    except Exception as exc:
-                        console.print(f"  [dim]Explorer stopped: {exc}[/]")
+                    while True:
+                        try:
+                            await server.serve()
+                        except Exception as exc:
+                            log.warning("Explorer crashed: %s — restarting in 5s", exc)
+                            console.print(
+                                f"  [dim]Explorer crashed: {exc} — restarting...[/]"
+                            )
+                            await asyncio.sleep(5)
+                            server.started = False
 
                 asyncio.create_task(_run_explorer())
                 # Give uvicorn a moment to bind
@@ -453,11 +461,30 @@ def _auto_prepare():
 
 
 def _configure_logging():
-    """Set up logging so users see gossip events."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="  %(message)s",
+    """Set up logging to both console and file."""
+    log_dir = SPORE_DIR / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "spore.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # Console handler — minimal format for user
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter("  %(message)s"))
+    root.addHandler(console_handler)
+
+    # File handler — full detail for diagnostics
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=3
     )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root.addHandler(file_handler)
+
     # Quiet down noisy loggers
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
