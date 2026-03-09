@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from .record import ExperimentRecord
 from .verify import (
+    DisputeOutcome,
     VerificationResult,
     Verifier,
 )
@@ -70,7 +71,7 @@ class ChallengeCoordinator:
             return
 
         # Re-run the experiment with the recorded code
-        code_bytes = self._node.store.get(record.code_cid)
+        code_bytes = await self._get_code_bytes(record)
         if not code_bytes:
             log.warning("No code available for spot-check of %s", record.id[:8])
             return
@@ -100,6 +101,7 @@ class ChallengeCoordinator:
                 record,
                 is_frontier=record.id in {r.id for r in self._node.graph.frontier()},
             )
+            self._node.graph.mark_verified(record.id, True)
             return
 
         # Result differs — initiate challenge
@@ -155,7 +157,7 @@ class ChallengeCoordinator:
         if runner is None:
             return
 
-        code_bytes = self._node.store.get(record.code_cid)
+        code_bytes = await self._get_code_bytes(record)
         if not code_bytes:
             return
 
@@ -243,6 +245,8 @@ class ChallengeCoordinator:
 
         # Broadcast dispute result
         if self._node:
+            if dispute.outcome == DisputeOutcome.UPHELD:
+                self._node.graph.mark_verified(experiment_id, True)
             await self._node.gossip.broadcast_dispute(
                 {
                     "experiment_id": dispute.experiment_id,
@@ -264,6 +268,8 @@ class ChallengeCoordinator:
             outcome,
             payload.get("ground_truth_bpb", 0),
         )
+        if self._node and outcome == DisputeOutcome.UPHELD.value:
+            self._node.graph.mark_verified(experiment_id, True)
         # Clean up if we had a pending challenge for this
         self._pending.pop(experiment_id, None)
 
@@ -275,3 +281,14 @@ class ChallengeCoordinator:
             return ExperimentRunner(self._node.workspace)
         except Exception:
             return None
+
+    async def _get_code_bytes(self, record: ExperimentRecord) -> bytes | None:
+        """Load code locally or fetch it from peers for verification."""
+        if self._node is None:
+            return None
+
+        code_bytes = self._node.store.get(record.code_cid)
+        if code_bytes is not None:
+            return code_bytes
+
+        return await self._node.fetch_code(record.code_cid)

@@ -38,6 +38,21 @@ val_bpb: 0.972345
         assert result.num_steps == 100
         assert result.peak_vram_mb == 0.0
 
+    def test_parse_workspace_summary_output(self):
+        runner = ExperimentRunner("/tmp")
+        output = """
+step 100
+num_steps:        307
+num_params_M:     124.0
+peak_vram_mb:     11701.0
+val_bpb:          1.103047
+"""
+        result = runner._parse_output(output)
+        assert result.val_bpb == pytest.approx(1.103047)
+        assert result.peak_vram_mb == 11701.0
+        assert result.num_params == 124_000_000
+        assert result.num_steps == 307
+
 
 class TestRunTraining:
     def test_run_stub(self, tmp_path):

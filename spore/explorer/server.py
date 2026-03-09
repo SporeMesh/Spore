@@ -166,6 +166,10 @@ def create_app(node: SporeNode) -> FastAPI:
         records = node.graph.by_node(node_id)
         return [_record_to_dict(r) for r in records]
 
+    @app.get("/api/node/{node_id}/reputation")
+    async def node_reputation(node_id: str):
+        return node.reputation.get_stats(node_id)
+
     @app.get("/api/search")
     async def search(q: str = ""):
         """Search experiments by CID prefix, description, or node ID."""
@@ -193,6 +197,8 @@ def create_app(node: SporeNode) -> FastAPI:
     async def artifact(cid: str):
         """Get stored code artifact by CID."""
         data = node.store.get(cid)
+        if data is None:
+            data = await node.fetch_code(cid)
         if data is None:
             return {"error": "not found"}
         return {"cid": cid, "content": data.decode("utf-8", errors="replace")}

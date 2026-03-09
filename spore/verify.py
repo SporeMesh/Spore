@@ -9,6 +9,7 @@ from __future__ import annotations
 import random
 import sqlite3
 import statistics
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -156,6 +157,23 @@ class ReputationStore:
             "SELECT * FROM reputation ORDER BY score DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def backfill_published(self, records: list[ExperimentRecord]):
+        """Ensure publish counts exist for already-synced experiments."""
+        counts = Counter(r.node_id for r in records if r.node_id)
+        for node_id, published in counts.items():
+            self._ensure_node(node_id)
+            row = self.conn.execute(
+                "SELECT experiments_published FROM reputation WHERE node_id = ?",
+                (node_id,),
+            ).fetchone()
+            current = row["experiments_published"] if row else 0
+            if current < published:
+                self.conn.execute(
+                    "UPDATE reputation SET experiments_published = ? WHERE node_id = ?",
+                    (published, node_id),
+                )
+        self.conn.commit()
 
     def _ensure_node(self, node_id: str):
         self.conn.execute(

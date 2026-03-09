@@ -75,6 +75,10 @@ class SporeNode:
     def __init__(self, config: NodeConfig | None = None):
         self.config = config or NodeConfig.load()
         self.data_dir = Path(self.config.data_dir).expanduser()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "db").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "artifact").mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "identity").mkdir(parents=True, exist_ok=True)
 
         # Load or generate identity
         self.signing_key, self.node_id = self._load_identity()
@@ -83,6 +87,7 @@ class SporeNode:
         self.graph = ResearchGraph(self.data_dir / "db" / "graph.sqlite")
         self.store = ArtifactStore(self.data_dir / "artifact")
         self.reputation = ReputationStore(self.data_dir / "db" / "reputation.sqlite")
+        self.reputation.backfill_published(self.graph.all_records())
         # Verification
         self.verifier = Verifier(self.reputation)
         self.challenger = ChallengeCoordinator(
@@ -144,10 +149,7 @@ class SporeNode:
         """Called when a remote experiment arrives via gossip."""
         inserted = self.graph.insert(record)
         if inserted:
-            # Store the code snapshot
-            code_data = record.diff.encode("utf-8")
-            if code_data:
-                self.store.put(code_data)
+            self.reputation.record_published(record.node_id, record)
             log.info(
                 "Received experiment %s (val_bpb=%.6f, %s) from %s",
                 record.id[:8],
@@ -177,6 +179,7 @@ class SporeNode:
         record.node_id = self.node_id
         record.sign(self.signing_key)
         self.graph.insert(record)
+        self.reputation.record_published(record.node_id, record)
         # Store full code snapshot for verification
         if code:
             self.store.put(code.encode("utf-8"))

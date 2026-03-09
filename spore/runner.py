@@ -297,9 +297,17 @@ class ExperimentRunner:
         match = re.search(r"num_parameters:\s*([\d,]+)", output)
         if match:
             result.num_params = int(match.group(1).replace(",", ""))
+        else:
+            match = re.search(r"num_params_M:\s*([\d.]+)", output)
+            if match:
+                result.num_params = int(float(match.group(1)) * 1_000_000)
 
-        steps = re.findall(r"step\s+(\d+)", output)
-        if steps:
-            result.num_steps = int(steps[-1])
+        match = re.search(r"num_steps:\s*(\d+)", output)
+        if match:
+            result.num_steps = int(match.group(1))
+        else:
+            steps = re.findall(r"step\s+(\d+)", output)
+            if steps:
+                result.num_steps = int(steps[-1])
 
         return result

@@ -84,6 +84,21 @@ class TestReputationStore:
         assert stats["verifications_performed"] == 1
         assert stats["score"] == 1.5  # 1.0 (verified keep) + 0.5 (verification)
 
+    def test_backfill_published(self, reputation, keypair, second_keypair):
+        _, node_id = keypair
+        _, second_node_id = second_keypair
+        records = [
+            make_record(keypair, description="a"),
+            make_record(keypair, description="b"),
+            make_record(second_keypair, description="c"),
+        ]
+
+        reputation.backfill_published(records)
+        reputation.backfill_published(records)  # idempotent
+
+        assert reputation.get_stats(node_id)["experiments_published"] == 2
+        assert reputation.get_stats(second_node_id)["experiments_published"] == 1
+
 
 class TestVerifier:
     def test_tolerance_band(self, reputation):

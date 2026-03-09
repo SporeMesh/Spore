@@ -38,6 +38,10 @@ export async function getNodeExperiment(nodeId) {
   return fetchJson(`/api/node/${nodeId}/experiment`);
 }
 
+export async function getNodeReputation(nodeId) {
+  return fetchJson(`/api/node/${nodeId}/reputation`);
+}
+
 export async function searchExperiment(query) {
   if (!query || query.length < 2) return [];
   return fetchJson(`/api/search?q=${encodeURIComponent(query)}`);

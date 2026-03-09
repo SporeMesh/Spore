@@ -2,7 +2,7 @@
 
 import {
   getStat, getGraph, getFrontier, getExperiment, getAncestor,
-  getChildren, getLeaderboard, searchExperiment, getArtifact,
+  getChildren, getLeaderboard, getNodeReputation, searchExperiment, getArtifact,
   shortCid, formatParam, statusColor, timeAgo, escHtml,
 } from './api.js';
 import { initDag, renderDag, updateSelection, resetHighlight } from './dag.js';
@@ -135,6 +135,12 @@ async function refreshLeaderboard() {
   const data = await getLeaderboard();
   const tbody = document.querySelector('#leaderboard-table tbody');
   tbody.innerHTML = '';
+  if (data.length === 0) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="7" style="color:var(--text-dim);text-align:center">No reputation data yet</td>';
+    tbody.appendChild(tr);
+    return;
+  }
   data.forEach((r, i) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -155,6 +161,7 @@ async function selectExperiment(cid) {
   selectedNode = cid;
   const r = await getExperiment(cid);
   if (r.error) return;
+  const rep = await getNodeReputation(r.node_id);
 
   document.getElementById('detail-empty').style.display = 'none';
   const content = document.getElementById('detail-content');
@@ -243,6 +250,10 @@ async function selectExperiment(cid) {
       <div class="detail-field">
         <label>Node</label>
         <div class="value cid" onclick="window.__selectNode && window.__selectNode('${r.node_id}')">${shortCid(r.node_id)}</div>
+      </div>
+      <div class="detail-field">
+        <label>Reputation</label>
+        <div class="value">${rep.score.toFixed(1)} · ${rep.experiments_published} published · ${rep.experiments_verified} verified</div>
       </div>
       <div class="detail-field">
         <label>Time</label>

@@ -42,7 +42,9 @@ Rules:
 - Everything is fair game: architecture, optimizer, hyperparameters, batch size.
 
 Return the FULL modified train.py inside a ```python code block.
-Before the code, write ONE sentence explaining what you changed and why."""
+Before the code, write exactly two lines:
+Description: <what you changed>
+Hypothesis: <why it should improve val_bpb>"""
 
 
 class ExperimentLoop:
@@ -57,6 +59,7 @@ class ExperimentLoop:
         self.llm = LLMClient(load_llm_config(node.data_dir))
         self._prepare_cid = self._hash_file("prepare.py")
         self._gpu = _detect_gpu()
+        self._cuda_ver = _detect_cuda_version()
         self._torch_ver = _detect_torch_version()
 
     async def run(self):
@@ -139,7 +142,12 @@ class ExperimentLoop:
 
         code = self.runner.get_code()
         record = self._make_record(
-            result, parent=None, diff="", description="baseline", agent="baseline"
+            result,
+            parent=None,
+            diff="",
+            description="baseline",
+            hypothesis="Baseline run of the unmodified training script.",
+            agent="baseline",
         )
         await self.node.publish_experiment(record, code=code)
         console.print("[green]Baseline published to graph.[/]\n")
@@ -172,7 +180,7 @@ class ExperimentLoop:
 
         # Apply, run, record
         old_code = current_code
-        description = _extract_description(response)
+        description, hypothesis = _extract_metadata(response)
         console.print(f"\n[bold]Experiment:[/] {description}\n")
 
         self.runner.apply_code(new_code)
@@ -185,6 +193,7 @@ class ExperimentLoop:
             parent=parent,
             diff=diff,
             description=description,
+            hypothesis=hypothesis,
             agent=self.llm.model,
         )
         await self.node.publish_experiment(record, code=current_code)
@@ -204,18 +213,19 @@ class ExperimentLoop:
             else:
                 console.print(f"[bold yellow]CRASH[/] {result.error or 'unknown'}\n")
 
-    def _make_record(self, result, parent, diff, description, agent):
+    def _make_record(self, result, parent, diff, description, hypothesis, agent):
         return self.runner.make_record(
             result,
             parent=parent,
             diff=diff,
             description=description,
-            hypothesis="",
+            hypothesis=hypothesis,
             agent_model=agent,
             node_id=self.node.node_id,
             dataset_cid="climbmix-400b-shuffle",
             prepare_cid=self._prepare_cid,
             gpu_model=self._gpu,
+            cuda_version=self._cuda_ver,
             torch_version=self._torch_ver,
         )
 
@@ -235,13 +245,50 @@ def _extract_code(response: str) -> str | None:
     return None
 
 
-def _extract_description(response: str) -> str:
-    """First non-code line as description."""
+def _extract_metadata(response: str) -> tuple[str, str]:
+    """Extract description and hypothesis from the LLM response."""
+    description = ""
+    hypothesis = ""
+    in_code_block = False
+
     for line in response.strip().split("\n"):
         line = line.strip()
-        if line and not line.startswith("```") and not line.startswith("#"):
-            return line[:500]
-    return "LLM-proposed modification"
+        lower = line.lower()
+        if line.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if not line or in_code_block or line.startswith("#"):
+            continue
+        if lower.startswith("description:"):
+            description = line.split(":", 1)[1].strip()[:500]
+            continue
+        if lower.startswith("hypothesis:"):
+            hypothesis = line.split(":", 1)[1].strip()[:500]
+            continue
+        if not description:
+            description = line[:500]
+        elif not hypothesis:
+            hypothesis = line[:500]
+
+    if not description:
+        description = "LLM-proposed modification"
+
+    if not hypothesis:
+        description, hypothesis = _split_summary(description)
+
+    return description[:500], hypothesis[:500]
+
+
+def _split_summary(summary: str) -> tuple[str, str]:
+    """Best-effort split of a one-line summary into what/why."""
+    lower = summary.lower()
+    for marker in (" because ", " since ", " so that "):
+        idx = lower.find(marker)
+        if idx != -1:
+            head = summary[:idx].strip(" .")
+            tail = summary[idx + len(marker) :].strip(" .")
+            return head or summary[:500], tail or summary[:500]
+    return summary[:500], summary[:500]
 
 
 def _compute_diff(old: str, new: str) -> str:
@@ -276,3 +323,16 @@ def _detect_torch_version() -> str:
         return torch.__version__
     except ImportError:
         return "unknown"
+
+
+def _detect_cuda_version() -> str:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return torch.version.cuda or "unknown"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    except ImportError:
+        pass
+    return "cpu"
