@@ -147,12 +147,24 @@ def run(
                     app, host="0.0.0.0", port=actual_web_port, log_level="warning"
                 )
                 server = uvicorn.Server(uvi_config)
-                asyncio.create_task(server.serve())
-                console.print(
-                    f"  Explorer: [link=http://localhost:{actual_web_port}]http://localhost:{actual_web_port}[/link]"
-                )
-            except Exception:
-                console.print("  [dim]Explorer failed to start (non-fatal)[/]")
+
+                async def _run_explorer():
+                    try:
+                        await server.serve()
+                    except Exception as exc:
+                        console.print(f"  [dim]Explorer stopped: {exc}[/]")
+
+                asyncio.create_task(_run_explorer())
+                # Give uvicorn a moment to bind
+                await asyncio.sleep(0.5)
+                if server.started:
+                    console.print(
+                        f"  Explorer: [link=http://localhost:{actual_web_port}]http://localhost:{actual_web_port}[/link]"
+                    )
+                else:
+                    console.print(f"  [dim]Explorer failed to bind on :{actual_web_port}[/]")
+            except Exception as exc:
+                console.print(f"  [dim]Explorer failed: {exc}[/]")
         else:
             console.print("  [dim]No port available for explorer (non-fatal)[/]")
         console.print()
