@@ -109,9 +109,12 @@ def run(
 
     os.environ["SPORE_RESOURCE"] = str(resource)
 
-    # Auto-prepare data if needed (--genesis or missing train.py)
-    if genesis or not Path("train.py").exists():
+    # Genesis: prepare everything synchronously before starting (no peers to sync with)
+    if genesis:
         _auto_prepare()
+    elif not Path("train.py").exists():
+        # Non-genesis: copy workspace files now, defer data prep to run concurrently
+        _copy_workspace_file()
 
     # Determine training mode
     should_train = False
@@ -136,7 +139,14 @@ def run(
 
         from .explorer import create_app
 
+        # Start peer connections immediately
         await node.start(skip_peer=genesis)
+
+        # For non-genesis nodes, run data prep concurrently with peer sync
+        if should_train and not genesis:
+            prepare_task = asyncio.create_task(asyncio.to_thread(_prepare_data_only))
+        else:
+            prepare_task = None
 
         # Start explorer web UI (non-fatal if it fails)
         actual_web_port = _find_available_port(web_port)
@@ -172,7 +182,15 @@ def run(
         console.print()
 
         try:
-            if should_train:
+            can_train = should_train
+            if can_train and prepare_task:
+                try:
+                    await prepare_task
+                except Exception as e:
+                    console.print(f"[red]Data preparation failed: {e}[/]")
+                    can_train = False
+
+            if can_train:
                 from .loop import ExperimentLoop
 
                 loop = ExperimentLoop(node, Path.cwd())
@@ -388,13 +406,11 @@ def version():
 # --- Helpers ---
 
 
-def _auto_prepare():
-    """Copy bundled workspace files and run prepare.py if data is missing."""
+def _copy_workspace_file():
+    """Copy bundled workspace files to cwd without running prepare.py."""
     import shutil
-    import subprocess
     from importlib.resources import files
 
-    # Copy train.py and prepare.py from package if missing
     workspace_pkg = files("spore.workspace")
     for filename in ("train.py", "prepare.py"):
         dest = Path.cwd() / filename
@@ -403,7 +419,11 @@ def _auto_prepare():
             shutil.copy2(str(src), str(dest))
             console.print(f"  Copied [cyan]{filename}[/] to working directory.")
 
-    # Run prepare.py if data isn't ready
+
+def _prepare_data_only():
+    """Run prepare.py if data isn't ready. Safe to call from a thread."""
+    import subprocess
+
     cache_dir = Path("~/.cache/autoresearch").expanduser()
     if cache_dir.exists() and any(cache_dir.iterdir()):
         console.print("[dim]Data already prepared, skipping.[/]")
@@ -415,9 +435,14 @@ def _auto_prepare():
         cwd=str(Path.cwd()),
     )
     if result.returncode != 0:
-        console.print("[red]prepare.py failed.[/]")
-        raise SystemExit(1)
+        raise RuntimeError("prepare.py failed")
     console.print("[green]Data prepared.[/]")
+
+
+def _auto_prepare():
+    """Copy bundled workspace files and run prepare.py if data is missing."""
+    _copy_workspace_file()
+    _prepare_data_only()
 
 
 def _configure_logging():

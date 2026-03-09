@@ -102,6 +102,7 @@ class SporeNode:
             on_challenge=self.challenger.on_challenge,
             on_challenge_response=self.challenger.on_challenge_response,
             on_dispute=self.challenger.on_dispute,
+            on_code_request=self._on_code_request,
         )
         self._listener: list[Callable[[ExperimentRecord], None]] = []
 
@@ -191,6 +192,29 @@ class SporeNode:
                 cb(record)
             except Exception:
                 log.exception("Listener callback failed")
+
+    def _on_code_request(self, code_cid: str) -> bytes | None:
+        """Called when a peer requests code by CID."""
+        return self.store.get(code_cid)
+
+    async def fetch_code(self, code_cid: str) -> bytes | None:
+        """Try to fetch code by CID from any connected peer."""
+        import hashlib
+
+        for addr in list(self.gossip.peers.keys()):
+            code_bytes = await self.gossip.request_code(addr, code_cid, timeout=15.0)
+            if code_bytes is not None:
+                actual_cid = hashlib.sha256(code_bytes).hexdigest()
+                if actual_cid == code_cid:
+                    self.store.put(code_bytes)
+                    return code_bytes
+                log.warning(
+                    "Code CID mismatch from %s: expected %s, got %s",
+                    addr,
+                    code_cid[:8],
+                    actual_cid[:8],
+                )
+        return None
 
     async def start(self, *, skip_peer: bool = False):
         """Start the gossip server and connect to peers."""

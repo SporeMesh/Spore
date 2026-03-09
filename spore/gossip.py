@@ -31,6 +31,8 @@ class MessageType:
     CHALLENGE = "challenge"
     CHALLENGE_RESPONSE = "challenge_response"
     DISPUTE = "dispute"
+    CODE_REQUEST = "code_request"
+    CODE_RESPONSE = "code_response"
 
 
 def encode_message(msg_type: str, payload: dict) -> bytes:
@@ -64,6 +66,7 @@ class GossipServer:
         on_challenge: Callable[[dict], None] | None = None,
         on_challenge_response: Callable[[dict], None] | None = None,
         on_dispute: Callable[[dict], None] | None = None,
+        on_code_request: Callable[[str], bytes | None] | None = None,
     ):
         self.host = host
         self.port = port
@@ -73,10 +76,12 @@ class GossipServer:
         self.on_challenge = on_challenge
         self.on_challenge_response = on_challenge_response
         self.on_dispute = on_dispute
+        self.on_code_request = on_code_request
         self.peers: dict[str, tuple[asyncio.StreamReader, asyncio.StreamWriter]] = {}
         self.seen_cid: set[str] = set()
         self._server: asyncio.Server | None = None
         self._tasks: list[asyncio.Task] = []
+        self._pending_code: dict[str, asyncio.Future] = {}
 
     async def start(self):
         self._server = await asyncio.start_server(
@@ -183,6 +188,24 @@ class GossipServer:
         writer.write(msg)
         await writer.drain()
 
+    async def request_code(
+        self, addr: str, code_cid: str, timeout: float = 30.0
+    ) -> bytes | None:
+        """Request code from a peer by code_cid. Returns code bytes or None."""
+        if addr not in self.peers:
+            return None
+        fut: asyncio.Future[bytes | None] = asyncio.get_running_loop().create_future()
+        self._pending_code[code_cid] = fut
+        _, writer = self.peers[addr]
+        msg = encode_message(MessageType.CODE_REQUEST, {"code_cid": code_cid})
+        writer.write(msg)
+        await writer.drain()
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_code.pop(code_cid, None)
+            return None
+
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ):
@@ -276,6 +299,35 @@ class GossipServer:
         elif msg_type == MessageType.DISPUTE:
             if self.on_dispute:
                 self.on_dispute(payload)
+
+        elif msg_type == MessageType.CODE_REQUEST:
+            code_cid = payload.get("code_cid", "")
+            if self.on_code_request and addr in self.peers:
+                code_bytes = self.on_code_request(code_cid)
+                if code_bytes is not None:
+                    import base64
+
+                    _, writer = self.peers[addr]
+                    resp = encode_message(
+                        MessageType.CODE_RESPONSE,
+                        {
+                            "code_cid": code_cid,
+                            "code": base64.b64encode(code_bytes).decode("ascii"),
+                        },
+                    )
+                    writer.write(resp)
+                    await writer.drain()
+                    log.info("Sent code %s to %s", code_cid[:8], addr)
+
+        elif msg_type == MessageType.CODE_RESPONSE:
+            import base64
+
+            code_cid = payload.get("code_cid", "")
+            code_b64 = payload.get("code", "")
+            fut = self._pending_code.pop(code_cid, None)
+            if fut and not fut.done():
+                fut.set_result(base64.b64decode(code_b64))
+            log.info("Received code %s", code_cid[:8])
 
         elif msg_type == MessageType.PING:
             if addr in self.peers:

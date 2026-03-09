@@ -61,21 +61,25 @@ class ExperimentLoop:
 
     async def run(self):
         """Run baseline if needed, then experiment forever."""
-        # Wait for peer sync to complete before deciding on baseline
-        if self.node.config.peer and self.node.graph.count() == 0:
-            log.info("Waiting for peer sync...")
-            for _ in range(10):  # up to 5 seconds
-                await asyncio.sleep(0.5)
-                if self.node.graph.count() > 0:
-                    break
+        await self._await_peer_sync()
 
         if self.node.graph.count() == 0:
+            # No experiments from peers — run baseline
             ok = await self._run_baseline()
             if not ok:
                 log.error(
                     "Baseline failed. Is prepare.py data ready? Does train.py run?"
                 )
                 return
+        else:
+            # Graph has experiments from peers — fetch best code
+            applied = await self._apply_frontier_code()
+            if not applied:
+                log.info("Could not fetch frontier code, running baseline instead")
+                ok = await self._run_baseline()
+                if not ok:
+                    log.error("Baseline failed.")
+                    return
 
         while True:
             try:
@@ -83,6 +87,47 @@ class ExperimentLoop:
             except Exception:
                 log.exception("Experiment iteration failed")
                 await asyncio.sleep(10)
+
+    async def _await_peer_sync(self):
+        """Wait for peer sync to populate the graph."""
+        has_peer = self.node.config.peer or self.node.gossip.peers
+        if not has_peer:
+            return
+        log.info("Waiting for peer sync...")
+        for _ in range(30):  # up to 15 seconds
+            await asyncio.sleep(0.5)
+            if self.node.graph.count() > 0:
+                await asyncio.sleep(2.0)  # wait for stragglers
+                break
+        log.info("Peer sync: %d experiments in graph", self.node.graph.count())
+
+    async def _apply_frontier_code(self) -> bool:
+        """Fetch the best frontier experiment's code and apply as train.py."""
+        best = self.node.graph.best()
+        if best is None:
+            return False
+
+        console.print(
+            f"[dim]Best frontier: {best.id[:8]} val_bpb={best.val_bpb:.6f}[/]"
+        )
+
+        # Check local artifact store first
+        code_bytes = self.node.store.get(best.code_cid)
+        if code_bytes is None:
+            console.print("[dim]Requesting frontier code from peers...[/]")
+            code_bytes = await self.node.fetch_code(best.code_cid)
+
+        if code_bytes is None:
+            console.print("[yellow]Could not obtain frontier code[/]")
+            return False
+
+        code = code_bytes.decode("utf-8")
+        self.runner.apply_code(code)
+        console.print(
+            f"[green]Applied frontier code from {best.id[:8]} "
+            f"(val_bpb={best.val_bpb:.6f})[/]"
+        )
+        return True
 
     async def _run_baseline(self) -> bool:
         """Run train.py as-is to establish baseline val_bpb."""
