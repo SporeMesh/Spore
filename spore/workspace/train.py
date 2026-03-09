@@ -34,6 +34,12 @@ def _detect_device():
 _DEVICE = _detect_device()
 _USE_CUDA = _DEVICE.type == "cuda"
 _USE_COMPILE = _USE_CUDA and not _env_flag("SPORE_DISABLE_COMPILE")
+_USE_MODEL_COMPILE = _USE_COMPILE and not _env_flag("SPORE_DISABLE_MODEL_COMPILE")
+_USE_OPTIMIZER_COMPILE = _USE_COMPILE and _env_flag("SPORE_ENABLE_OPTIMIZER_COMPILE")
+
+if _USE_COMPILE:
+    # Inductor compile workers are a common crash point on smaller CUDA boxes.
+    os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
 
 # Attention backend: FA3 on Hopper, PyTorch SDPA elsewhere
 fa3 = None
@@ -496,7 +502,7 @@ def muon_step_fused(
     stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
 
 
-if _USE_COMPILE:
+if _USE_OPTIMIZER_COMPILE:
     adamw_step_fused = torch.compile(dynamic=False, fullgraph=True)(adamw_step_fused)
     muon_step_fused = torch.compile(dynamic=False, fullgraph=True)(muon_step_fused)
 
@@ -507,9 +513,8 @@ class MuonAdamW(torch.optim.Optimizer):
     def __init__(self, param_groups):
         super().__init__(param_groups, defaults={})
         # 0-D tensors to avoid torch.compile recompilation when values change.
-        # On CUDA with compile, CPU tensors are fine (transfers handled automatically).
-        # On MPS/CPU without compile, tensors must be on the model device.
-        scalar_dev = "cpu" if _USE_COMPILE else _DEVICE
+        # Only the optimizer-compile path benefits from keeping scalar tensors on CPU.
+        scalar_dev = "cpu" if _USE_OPTIMIZER_COMPILE else _DEVICE
         self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_dev)
         self._adamw_lr_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_dev)
         self._adamw_beta1_t = torch.tensor(0.0, dtype=torch.float32, device=scalar_dev)
@@ -662,7 +667,15 @@ device = _DEVICE
 autocast_ctx = torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16)
 H100_BF16_PEAK_FLOPS = 989.5e12
 
-print(f"Device: {device} ({'compile enabled' if _USE_COMPILE else 'compile disabled'})")
+if _USE_MODEL_COMPILE and _USE_OPTIMIZER_COMPILE:
+    compile_mode = "compile model+optimizer"
+elif _USE_MODEL_COMPILE:
+    compile_mode = "compile model only"
+elif _USE_COMPILE:
+    compile_mode = "compile requested, running eager"
+else:
+    compile_mode = "compile disabled"
+print(f"Device: {device} ({compile_mode})")
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
 print(f"Vocab size: {vocab_size:,}")
@@ -712,7 +725,7 @@ optimizer = model.setup_optimizer(
     weight_decay=WEIGHT_DECAY,
 )
 
-if _USE_COMPILE:
+if _USE_MODEL_COMPILE:
     model = torch.compile(model, dynamic=False)
 
 train_loader = make_dataloader(
