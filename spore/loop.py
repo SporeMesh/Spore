@@ -195,7 +195,7 @@ def _extract_description(response: str) -> str:
     for line in response.strip().split("\n"):
         line = line.strip()
         if line and not line.startswith("```") and not line.startswith("#"):
-            return line[:200]
+            return line[:500]
     return "LLM-proposed modification"
 
 

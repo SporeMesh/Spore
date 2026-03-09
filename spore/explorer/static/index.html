@@ -159,7 +159,7 @@
     font-size: 11px;
     white-space: pre-wrap;
     word-break: break-all;
-    max-height: 200px;
+    max-height: 400px;
     overflow-y: auto;
     line-height: 1.5;
   }
@@ -444,7 +444,7 @@ async function refreshFrontier() {
       <td>${r.gpu_model || '—'}</td>
       <td>${r.num_steps}</td>
       <td>${formatParams(r.num_params)}</td>
-      <td>${r.description.slice(0, 40)}</td>
+      <td>${r.description.slice(0, 80)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -564,7 +564,7 @@ async function selectExperiment(cid) {
         <span class="dot" style="background:${dotColor}"></span>
         <span>${shortCid(a.id)}</span>
         <span>${a.val_bpb.toFixed(6)}</span>
-        <span style="color:var(--text-dim)">${a.description.slice(0,30)}</span>
+        <span style="color:var(--text-dim)">${a.description.slice(0,60)}</span>
       </div>`;
     });
     chainHtml += '</div>';
@@ -713,7 +713,7 @@ function addActivity(record) {
     <span class="status-badge ${record.status}">${record.status}</span>
     <span class="cid-link" onclick="selectExperiment('${record.id}')">${shortCid(record.id)}</span>
     <span>val_bpb=${record.val_bpb.toFixed(6)}</span>
-    <span style="color:var(--text-dim)">${record.description.slice(0,30)}</span>
+    <span style="color:var(--text-dim)">${record.description.slice(0,60)}</span>
     <span style="color:var(--text-dim);margin-left:auto">${shortCid(record.node_id)}</span>
   `;
   feed.prepend(item);
