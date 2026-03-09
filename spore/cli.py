@@ -136,15 +136,21 @@ def run(
 
         await node.start(skip_peer=genesis)
 
-        # Start explorer web UI
-        web_port = _find_available_port(8470) or 8470
-        app = create_app(node)
-        uvi_config = uvicorn.Config(
-            app, host="0.0.0.0", port=web_port, log_level="warning"
-        )
-        server = uvicorn.Server(uvi_config)
-        asyncio.create_task(server.serve())
-        console.print(f"  Explorer: [link=http://localhost:{web_port}]http://localhost:{web_port}[/link]")
+        # Start explorer web UI (non-fatal if it fails)
+        web_port = _find_available_port(8470)
+        if web_port:
+            try:
+                app = create_app(node)
+                uvi_config = uvicorn.Config(
+                    app, host="0.0.0.0", port=web_port, log_level="warning"
+                )
+                server = uvicorn.Server(uvi_config)
+                asyncio.create_task(server.serve())
+                console.print(f"  Explorer: [link=http://localhost:{web_port}]http://localhost:{web_port}[/link]")
+            except Exception:
+                console.print("  [dim]Explorer failed to start (non-fatal)[/]")
+        else:
+            console.print("  [dim]No port available for explorer (non-fatal)[/]")
         console.print()
 
         try:
