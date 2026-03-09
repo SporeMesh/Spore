@@ -14,6 +14,7 @@ import hashlib
 import logging
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,11 +53,11 @@ class ExperimentRunner:
         self,
         workspace: str | Path,
         time_budget: int = 300,
-        python_cmd: str = "python3",
+        python_cmd: str | None = None,
     ):
         self.workspace = Path(workspace)
         self.time_budget = time_budget
-        self.python_cmd = python_cmd
+        self.python_cmd = python_cmd or sys.executable
 
     def run_training(self, train_script: str = "train.py") -> TrainResult:
         """Run the training script with live progress display."""
