@@ -18,6 +18,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _env_flag(name):
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # Device auto-detection
 def _detect_device():
     if torch.cuda.is_available():
@@ -29,7 +33,7 @@ def _detect_device():
 
 _DEVICE = _detect_device()
 _USE_CUDA = _DEVICE.type == "cuda"
-_USE_COMPILE = _USE_CUDA  # torch.compile only reliable on CUDA for now
+_USE_COMPILE = _USE_CUDA and not _env_flag("SPORE_DISABLE_COMPILE")
 
 # Attention backend: FA3 on Hopper, PyTorch SDPA elsewhere
 fa3 = None

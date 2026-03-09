@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -61,6 +62,41 @@ class ExperimentRunner:
 
     def run_training(self, train_script: str = "train.py") -> TrainResult:
         """Run the training script with live progress display."""
+        result = self._run_training_once(train_script)
+        if result.success or not self._looks_like_compile_crash(result):
+            return result
+
+        console.print(
+            "[yellow]Compile crash detected, retrying with compile disabled.[/]"
+        )
+        retry_result = self._run_training_once(
+            train_script,
+            env_overrides={
+                "SPORE_DISABLE_COMPILE": "1",
+                "TORCHINDUCTOR_COMPILE_THREADS": "1",
+            },
+        )
+        if retry_result.success:
+            retry_result.log_output = (
+                result.log_output
+                + "\n\n=== retry: compile disabled ===\n\n"
+                + retry_result.log_output
+            )
+            return retry_result
+        if result.log_output or retry_result.log_output:
+            retry_result.log_output = (
+                result.log_output
+                + "\n\n=== retry: compile disabled ===\n\n"
+                + retry_result.log_output
+            )
+        return retry_result
+
+    def _run_training_once(
+        self,
+        train_script: str = "train.py",
+        env_overrides: dict[str, str] | None = None,
+    ) -> TrainResult:
+        """Run the training script once with optional environment overrides."""
         script_path = self.workspace / train_script
         if not script_path.exists():
             return TrainResult(error=f"Script not found: {script_path}", log_output="")
@@ -80,12 +116,16 @@ class ExperimentRunner:
         cur_epoch = 0
 
         try:
+            env = os.environ.copy()
+            if env_overrides:
+                env.update(env_overrides)
             proc = subprocess.Popen(
                 [self.python_cmd, "-u", str(script_path)],
                 cwd=str(self.workspace),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=env,
             )
 
             progress = Progress(
@@ -215,6 +255,21 @@ class ExperimentRunner:
 
         except Exception as e:
             return TrainResult(error=str(e), log_output="\n".join(output_lines))
+
+    def _looks_like_compile_crash(self, result: TrainResult) -> bool:
+        """Return True if the failure matches a known torch.compile/Inductor crash."""
+        haystack = "\n".join(
+            part for part in (result.error, result.log_output) if part
+        ).lower()
+        return any(
+            token in haystack
+            for token in (
+                "torch._inductor.exc.inductorerror",
+                "a compilation subprocess exited unexpectedly",
+                "torchinductor_compile_threads=1",
+                'set torch_logs="+dynamo"',
+            )
+        )
 
     def apply_code(self, code: str, train_script: str = "train.py"):
         """Write new code to the training script."""

@@ -98,6 +98,34 @@ print(f"val_bpb: {base_bpb:.6f}")
         assert not result.success
         assert result.val_bpb == 0.0
 
+    def test_run_retries_after_compile_crash(self, tmp_path):
+        """Training retries once with compile disabled after an Inductor crash."""
+        train_script = tmp_path / "train.py"
+        train_script.write_text(
+            """
+import os
+import sys
+
+if os.environ.get("SPORE_DISABLE_COMPILE") == "1":
+    print("step 500")
+    print("num_parameters: 124,000,000")
+    print("peak_vram_mb: 24000.0")
+    print("val_bpb: 0.972345")
+    sys.exit(0)
+
+print("torch._inductor.exc.InductorError: RuntimeError: A compilation subprocess exited unexpectedly.")
+print("To facilitate debugging, you can re-run with TORCHINDUCTOR_COMPILE_THREADS=1.")
+sys.exit(1)
+"""
+        )
+
+        runner = ExperimentRunner(tmp_path, time_budget=10)
+        result = runner.run_training()
+
+        assert result.success
+        assert result.val_bpb == pytest.approx(0.972345)
+        assert "retry: compile disabled" in result.log_output
+
     def test_run_missing_script(self, tmp_path):
         runner = ExperimentRunner(tmp_path, time_budget=10)
         result = runner.run_training("nonexistent.py")
