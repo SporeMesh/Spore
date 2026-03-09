@@ -144,7 +144,7 @@ This allows the network to grow organically — connecting to one peer discovers
 ### 4.6 Peer Discovery
 
 Nodes discover the network via:
-1. **Bootstrap peer**: `peer.sporemesh.com:7470` (used when no peers are configured and not in genesis mode)
+1. **Bootstrap peer**: ` 188.36.196.221:42208` (used when no peers are configured and not in genesis mode)
 2. **Persisted known peer**: `~/.spore/known_peer` (peers from previous sessions)
 3. **PEX**: peer lists received from connected peers
 4. **Manual config**: `spore connect <host:port>` or `--peer` flag

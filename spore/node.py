@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 SPORE_DIR = Path("~/.spore").expanduser()
 DEFAULT_PORT = 7470
-BOOTSTRAP_PEER = ["peer.sporemesh.com:7470"]
+BOOTSTRAP_PEER = ["188.36.196.221:42208"]
 KNOWN_PEER_FILE = "known_peer"
 
 

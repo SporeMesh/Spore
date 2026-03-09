@@ -109,8 +109,8 @@ def run(
 
     os.environ["SPORE_RESOURCE"] = str(resource)
 
-    # Auto-prepare data if --genesis
-    if genesis:
+    # Auto-prepare data if needed (--genesis or missing train.py)
+    if genesis or not Path("train.py").exists():
         _auto_prepare()
 
     # Determine training mode
@@ -162,7 +162,9 @@ def run(
                         f"  Explorer: [link=http://localhost:{actual_web_port}]http://localhost:{actual_web_port}[/link]"
                     )
                 else:
-                    console.print(f"  [dim]Explorer failed to bind on :{actual_web_port}[/]")
+                    console.print(
+                        f"  [dim]Explorer failed to bind on :{actual_web_port}[/]"
+                    )
             except Exception as exc:
                 console.print(f"  [dim]Explorer failed: {exc}[/]")
         else:
