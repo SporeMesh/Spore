@@ -51,7 +51,7 @@ class ExperimentRunner:
         self.python_cmd = python_cmd
 
     def run_training(self, train_script: str = "train.py") -> TrainResult:
-        """Run the training script and capture results.
+        """Run the training script and stream progress live.
 
         The script is expected to output lines containing:
         - val_bpb: <float>
@@ -65,17 +65,51 @@ class ExperimentRunner:
 
         log_path = self.workspace / "run.log"
         start_time = time.time()
+        timeout = self.time_budget + 300  # Extra margin for torch.compile warmup
+        output_lines: list[str] = []
 
         try:
-            result = subprocess.run(
-                [self.python_cmd, str(script_path)],
+            proc = subprocess.Popen(
+                [self.python_cmd, "-u", str(script_path)],
                 cwd=str(self.workspace),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                timeout=self.time_budget + 300,  # Extra margin for torch.compile warmup
             )
+
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                output_lines.append(line)
+
+                # Stream training progress
+                if line.startswith("\rstep ") or line.startswith("step "):
+                    # Carriage-return progress line from train.py
+                    log.info("  %s", line.lstrip("\r").strip())
+                elif "compiling" in line.lower() or "compile" in line.lower():
+                    log.info("  Compiling model (first run is slow)...")
+                elif line.startswith("Estimated") or line.startswith("num_param"):
+                    log.info("  %s", line)
+                elif line.startswith("Time budget"):
+                    log.info("  %s", line)
+                elif line.startswith("Gradient"):
+                    log.info("  %s", line)
+                elif "val_bpb" in line and "step" not in line:
+                    log.info("  %s", line)
+
+                # Check timeout
+                if time.time() - start_time > timeout:
+                    proc.kill()
+                    proc.wait()
+                    return TrainResult(
+                        training_sec=time.time() - start_time,
+                        error="Training timed out",
+                        log_output="\n".join(output_lines),
+                    )
+
+            proc.wait()
             elapsed = time.time() - start_time
-            output = result.stdout + "\n" + result.stderr
+            output = "\n".join(output_lines)
 
             # Save log
             log_path.write_text(output)
@@ -84,24 +118,16 @@ class ExperimentRunner:
             parsed = self._parse_output(output)
             parsed.training_sec = elapsed
             parsed.log_output = output
-            parsed.success = result.returncode == 0 and parsed.val_bpb > 0
+            parsed.success = proc.returncode == 0 and parsed.val_bpb > 0
 
-            if not parsed.success and result.returncode != 0:
-                # Grab last few lines of stderr/output as error message
+            if not parsed.success and proc.returncode != 0:
                 lines = [l for l in output.strip().splitlines() if l.strip()]
                 parsed.error = "\n".join(lines[-5:]) if lines else "Unknown error"
 
             return parsed
 
-        except subprocess.TimeoutExpired:
-            elapsed = time.time() - start_time
-            return TrainResult(
-                training_sec=elapsed,
-                error="Training timed out",
-                log_output="",
-            )
         except Exception as e:
-            return TrainResult(error=str(e), log_output="")
+            return TrainResult(error=str(e), log_output="\n".join(output_lines))
 
     def apply_code(self, code: str, train_script: str = "train.py"):
         """Write new code to the training script."""
