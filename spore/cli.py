@@ -130,7 +130,23 @@ def run(
     _print_banner(node, port, config.peer, mode, resource)
 
     async def _run():
+        import uvicorn
+
+        from .explorer import create_app
+
         await node.start(skip_peer=genesis)
+
+        # Start explorer web UI
+        web_port = _find_available_port(8470) or 8470
+        app = create_app(node)
+        uvi_config = uvicorn.Config(
+            app, host="0.0.0.0", port=web_port, log_level="warning"
+        )
+        server = uvicorn.Server(uvi_config)
+        asyncio.create_task(server.serve())
+        console.print(f"  Explorer: [link=http://localhost:{web_port}]http://localhost:{web_port}[/link]")
+        console.print()
+
         try:
             if should_train:
                 from .loop import ExperimentLoop
