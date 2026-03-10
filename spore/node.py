@@ -25,6 +25,7 @@ from .gpu import normalize_gpu_model
 from .graph import ResearchGraph
 from .record import ExperimentRecord, generate_keypair
 from .store import ArtifactStore
+from .training_runtime import TrainingRuntime
 from .verify import ReputationStore, Verifier
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class SporeNode:
         self.store = ArtifactStore(self.data_dir / "artifact")
         self.reputation = ReputationStore(self.data_dir / "db" / "reputation.sqlite")
         self.reputation.backfill_published(self.graph.all_records())
+        self.training = TrainingRuntime()
         # Verification
         self.verifier = Verifier(self.reputation)
         self.challenger = ChallengeCoordinator(

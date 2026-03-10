@@ -59,11 +59,7 @@ class ChallengeCoordinator:
 
     async def _run_spot_check(self, record: ExperimentRecord):
         """Re-run an experiment and challenge if result differs."""
-        if self._node is None:
-            return
-
-        runner = self._get_runner()
-        if runner is None:
+        if self._node is None or self._node.workspace is None:
             return
 
         # Re-run the experiment with the recorded code
@@ -72,8 +68,14 @@ class ChallengeCoordinator:
             log.warning("No code available for spot-check of %s", record.id[:8])
             return
 
-        runner.apply_code(code_bytes.decode("utf-8"))
-        result = await asyncio.to_thread(runner.run_training)
+        if self._node.training.busy():
+            log.info(
+                "Queueing spot-check for %s until local training slot is free",
+                record.id[:8],
+            )
+        result = await self._node.training.run_isolated(
+            self._node.workspace, code_bytes.decode("utf-8")
+        )
 
         if not result.success:
             log.warning("Spot-check run failed for %s", record.id[:8])
@@ -171,19 +173,21 @@ class ChallengeCoordinator:
 
     async def _run_verification(self, record: ExperimentRecord, challenge: dict):
         """Re-run experiment as a verifier and send response."""
-        if self._node is None:
-            return
-
-        runner = self._get_runner()
-        if runner is None:
+        if self._node is None or self._node.workspace is None:
             return
 
         code_bytes = await self._get_code_bytes(record)
         if not code_bytes:
             return
 
-        runner.apply_code(code_bytes.decode("utf-8"))
-        result = await asyncio.to_thread(runner.run_training)
+        if self._node.training.busy():
+            log.info(
+                "Queueing verification for %s until local training slot is free",
+                record.id[:8],
+            )
+        result = await self._node.training.run_isolated(
+            self._node.workspace, code_bytes.decode("utf-8")
+        )
 
         if not result.success:
             return
@@ -321,15 +325,6 @@ class ChallengeCoordinator:
         )
         # Clean up if we had a pending challenge for this
         self._pending.pop(experiment_id, None)
-
-    def _get_runner(self):
-        """Get an ExperimentRunner from the node's workspace."""
-        try:
-            from .runner import ExperimentRunner
-
-            return ExperimentRunner(self._node.workspace)
-        except Exception:
-            return None
 
     async def _get_code_bytes(self, record: ExperimentRecord) -> bytes | None:
         """Load code locally or fetch it from peers for verification."""

@@ -167,7 +167,7 @@ class ExperimentLoop:
     async def _run_baseline(self) -> bool:
         """Run train.py as-is to establish baseline val_bpb."""
         console.print("\n[bold]Running baseline...[/]\n")
-        result = await asyncio.to_thread(self.runner.run_training)
+        result = await self.node.training.run_runner(self.runner)
         if not result.success:
             console.print(f"[red]Baseline failed: {result.error}[/]")
             return False
@@ -218,7 +218,7 @@ class ExperimentLoop:
         console.print(f"\n[bold]Experiment:[/] {description}\n")
 
         self.runner.apply_code(new_code)
-        result = await asyncio.to_thread(self.runner.run_training)
+        result = await self.node.training.run_runner(self.runner)
 
         diff = _compute_diff(old_code, new_code)
         current_code = self.runner.get_code()
