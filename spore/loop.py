@@ -22,6 +22,7 @@ from pathlib import Path
 from rich.console import Console
 
 from .agent import AgentCoordinator
+from .gpu import normalize_gpu_model
 from .llm import LLMClient
 from .llm import load_config as load_llm_config
 from .node import SporeNode
@@ -406,12 +407,12 @@ def _detect_gpu() -> str:
         import torch
 
         if torch.cuda.is_available():
-            return torch.cuda.get_device_name(0).replace(" ", "_")
+            return normalize_gpu_model(torch.cuda.get_device_name(0))
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "apple-mps"
+            return "APPLE_MPS"
     except ImportError:
         pass
-    return "cpu"
+    return "CPU"
 
 
 def _detect_torch_version() -> str:

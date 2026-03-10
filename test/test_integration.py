@@ -160,6 +160,88 @@ class TestTwoNodeGossip:
         await server_c.stop()
         graph_c.close()
 
+    @pytest.mark.asyncio
+    async def test_control_message_fan_out(self):
+        """Challenge/verification/dispute events should re-gossip beyond one hop."""
+        seen_by_c: list[tuple[str, str]] = []
+
+        server_a = GossipServer(host="127.0.0.1", port=18479)
+        server_b = GossipServer(
+            host="127.0.0.1",
+            port=18480,
+            on_challenge=lambda payload: None,
+            on_challenge_response=lambda payload: None,
+            on_dispute=lambda payload: None,
+            on_verification=lambda payload: None,
+        )
+        server_c = GossipServer(
+            host="127.0.0.1",
+            port=18481,
+            on_challenge=lambda payload: seen_by_c.append(
+                ("challenge", payload["event_id"])
+            ),
+            on_challenge_response=lambda payload: seen_by_c.append(
+                ("challenge_response", payload["event_id"])
+            ),
+            on_dispute=lambda payload: seen_by_c.append(
+                ("dispute", payload["event_id"])
+            ),
+            on_verification=lambda payload: seen_by_c.append(
+                ("verification", payload["event_id"])
+            ),
+        )
+
+        await server_a.start()
+        await server_b.start()
+        await server_c.start()
+
+        await server_b.connect_to_peer("127.0.0.1", 18479)
+        await server_c.connect_to_peer("127.0.0.1", 18480)
+        await asyncio.sleep(0.1)
+
+        await server_a.broadcast_challenge(
+            {"event_id": "challenge:test", "experiment_id": "exp", "challenger_id": "a"}
+        )
+        await server_a.broadcast_challenge_response(
+            {
+                "event_id": "challenge_response:test",
+                "experiment_id": "exp",
+                "challenger_id": "a",
+                "verifier_id": "b",
+                "verifier_bpb": 1.0,
+                "verifier_gpu": "RTX_3060",
+            }
+        )
+        await server_a.broadcast_verification(
+            {
+                "event_id": "verification:test",
+                "experiment_id": "exp",
+                "verified_node_id": "pub",
+                "verifier_id": "b",
+                "is_frontier": False,
+            }
+        )
+        await server_a.broadcast_dispute(
+            {
+                "event_id": "dispute:test",
+                "experiment_id": "exp",
+                "challenger_id": "a",
+                "original_node_id": "pub",
+                "outcome": "upheld",
+                "ground_truth_bpb": 1.0,
+            }
+        )
+        await asyncio.sleep(0.3)
+
+        assert ("challenge", "challenge:test") in seen_by_c
+        assert ("challenge_response", "challenge_response:test") in seen_by_c
+        assert ("verification", "verification:test") in seen_by_c
+        assert ("dispute", "dispute:test") in seen_by_c
+
+        await server_a.stop()
+        await server_b.stop()
+        await server_c.stop()
+
 
 class TestFullWorkflow:
     """Test the complete workflow: create experiments, gossip, verify frontier."""

@@ -211,6 +211,13 @@ class ResearchGraph:
         )
         self.conn.commit()
 
+    def is_verified(self, cid: str) -> bool:
+        """Return whether an experiment has been verified."""
+        row = self.conn.execute(
+            "SELECT verified FROM experiment WHERE id = ?", (cid,)
+        ).fetchone()
+        return bool(row and row["verified"])
+
     def ascii_tree(self, max_depth: int = 50) -> str:
         """Render the graph as an ASCII tree."""
         roots = self.conn.execute(

@@ -9,48 +9,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import struct
 from collections.abc import Callable
 
 from .record import ExperimentRecord
+from .wire import MessageType, encode_message, read_message
 
 log = logging.getLogger(__name__)
-
-HEADER_SIZE = 4  # 4-byte big-endian uint32 length prefix
-MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
-
-
-class MessageType:
-    EXPERIMENT = "experiment"
-    SYNC_REQUEST = "sync_request"
-    SYNC_RESPONSE = "sync_response"
-    PING = "ping"
-    PONG = "pong"
-    PEX_REQUEST = "pex_request"
-    PEX_RESPONSE = "pex_response"
-    CHALLENGE = "challenge"
-    CHALLENGE_RESPONSE = "challenge_response"
-    DISPUTE = "dispute"
-    CODE_REQUEST = "code_request"
-    CODE_RESPONSE = "code_response"
-
-
-def encode_message(msg_type: str, payload: dict) -> bytes:
-    """Encode a message as length-prefixed JSON."""
-    envelope = {"type": msg_type, "payload": payload}
-    body = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
-    return struct.pack(">I", len(body)) + body
-
-
-async def read_message(reader: asyncio.StreamReader) -> dict | None:
-    """Read a length-prefixed JSON message from a stream."""
-    header = await reader.readexactly(HEADER_SIZE)
-    length = struct.unpack(">I", header)[0]
-    if length > MAX_MESSAGE_SIZE:
-        log.warning("Message too large: %d bytes", length)
-        return None
-    body = await reader.readexactly(length)
-    return json.loads(body.decode("utf-8"))
 
 
 class GossipServer:
@@ -66,6 +30,7 @@ class GossipServer:
         on_challenge: Callable[[dict], None] | None = None,
         on_challenge_response: Callable[[dict], None] | None = None,
         on_dispute: Callable[[dict], None] | None = None,
+        on_verification: Callable[[dict], None] | None = None,
         on_code_request: Callable[[str], bytes | None] | None = None,
     ):
         self.host = host
@@ -76,9 +41,11 @@ class GossipServer:
         self.on_challenge = on_challenge
         self.on_challenge_response = on_challenge_response
         self.on_dispute = on_dispute
+        self.on_verification = on_verification
         self.on_code_request = on_code_request
         self.peers: dict[str, tuple[asyncio.StreamReader, asyncio.StreamWriter]] = {}
         self.seen_cid: set[str] = set()
+        self.seen_event: set[str] = set()
         self._server: asyncio.Server | None = None
         self._tasks: list[asyncio.Task] = []
         self._pending_code: dict[str, asyncio.Future] = {}
@@ -157,8 +124,13 @@ class GossipServer:
         """Broadcast a resolved dispute to all peers."""
         await self._broadcast(MessageType.DISPUTE, payload)
 
+    async def broadcast_verification(self, payload: dict):
+        """Broadcast a successful verification event to all peers."""
+        await self._broadcast(MessageType.VERIFICATION, payload)
+
     async def _broadcast(self, msg_type: str, payload: dict):
         """Broadcast a message to all connected peers."""
+        self._mark_seen_event(msg_type, payload)
         msg = encode_message(msg_type, payload)
         for addr, (_, writer) in self.peers.items():
             try:
@@ -289,16 +261,32 @@ class GossipServer:
             log.info("PEX: received %d peers from %s", len(new_peer), addr)
 
         elif msg_type == MessageType.CHALLENGE:
+            if not self._mark_seen_event(msg_type, payload):
+                return
             if self.on_challenge:
                 self.on_challenge(payload)
+            await self._regossip_control(msg_type, payload, exclude=addr)
 
         elif msg_type == MessageType.CHALLENGE_RESPONSE:
+            if not self._mark_seen_event(msg_type, payload):
+                return
             if self.on_challenge_response:
                 self.on_challenge_response(payload)
+            await self._regossip_control(msg_type, payload, exclude=addr)
 
         elif msg_type == MessageType.DISPUTE:
+            if not self._mark_seen_event(msg_type, payload):
+                return
             if self.on_dispute:
                 self.on_dispute(payload)
+            await self._regossip_control(msg_type, payload, exclude=addr)
+
+        elif msg_type == MessageType.VERIFICATION:
+            if not self._mark_seen_event(msg_type, payload):
+                return
+            if self.on_verification:
+                self.on_verification(payload)
+            await self._regossip_control(msg_type, payload, exclude=addr)
 
         elif msg_type == MessageType.CODE_REQUEST:
             code_cid = payload.get("code_cid", "")
@@ -349,6 +337,31 @@ class GossipServer:
                 await writer.drain()
             except Exception:
                 pass
+
+    async def _regossip_control(self, msg_type: str, payload: dict, exclude: str):
+        """Forward a control-plane event to all peers except the source."""
+        msg = encode_message(msg_type, payload)
+        for addr, (_, writer) in self.peers.items():
+            if addr == exclude:
+                continue
+            try:
+                writer.write(msg)
+                await writer.drain()
+            except Exception:
+                pass
+
+    def _mark_seen_event(self, msg_type: str, payload: dict) -> bool:
+        """Return True once per unique control event."""
+        event_id = payload.get("event_id")
+        key = (
+            f"{msg_type}:{event_id}"
+            if event_id
+            else f"{msg_type}:{json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
+        )
+        if key in self.seen_event:
+            return False
+        self.seen_event.add(key)
+        return True
 
     def _remove_peer(self, addr: str):
         if addr in self.peers:

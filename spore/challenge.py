@@ -14,8 +14,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
 
+from .challenge_state import (
+    PendingChallenge,
+    apply_dispute_event,
+    apply_verification_event,
+    count_independent_verifiers,
+)
+from .gpu import normalize_gpu_model
 from .record import ExperimentRecord
 from .verify import (
     DisputeOutcome,
@@ -29,23 +35,13 @@ VERIFIER_COUNT = 3
 CHALLENGE_TIMEOUT = 600  # 10 min to collect verifier responses
 
 
-@dataclass
-class PendingChallenge:
-    experiment: ExperimentRecord
-    challenger_id: str
-    challenger_bpb: float
-    challenger_gpu: str
-    response: list[VerificationResult] = field(default_factory=list)
-    created_at: float = field(default_factory=time.time)
-
-
 class ChallengeCoordinator:
     """Manages the challenge/dispute lifecycle over the gossip network."""
 
     def __init__(self, verifier: Verifier, node_id: str, gpu_model: str):
         self.verifier = verifier
         self.node_id = node_id
-        self.gpu_model = gpu_model
+        self.gpu_model = normalize_gpu_model(gpu_model)
         self._pending: dict[str, PendingChallenge] = {}
         self._node = None  # Set by node after init
 
@@ -56,7 +52,7 @@ class ChallengeCoordinator:
         """Called when a new experiment arrives. Decides whether to spot-check."""
         if not self.verifier.should_verify(record):
             return
-        if record.gpu_model != self.gpu_model:
+        if not self.verifier.same_gpu_class(record.gpu_model, self.gpu_model):
             return  # Can only verify same GPU class
         log.info("Spot-checking experiment %s...", record.id[:8])
         asyncio.create_task(self._run_spot_check(record))
@@ -79,8 +75,6 @@ class ChallengeCoordinator:
         runner.apply_code(code_bytes.decode("utf-8"))
         result = await asyncio.to_thread(runner.run_training)
 
-        self.verifier.reputation.verification_performed(self.node_id)
-
         if not result.success:
             log.warning("Spot-check run failed for %s", record.id[:8])
             return
@@ -96,37 +90,53 @@ class ChallengeCoordinator:
                 record.val_bpb,
                 result.val_bpb,
             )
-            self.verifier.reputation.record_verified(
-                record.node_id,
-                record,
-                is_frontier=record.id in {r.id for r in self._node.graph.frontier()},
-            )
-            self._node.graph.mark_verified(record.id, True)
+            payload = {
+                "event_id": f"verification:{record.id}:{self.node_id}",
+                "experiment_id": record.id,
+                "verified_node_id": record.node_id,
+                "verifier_id": self.node_id,
+                "verifier_gpu": self.gpu_model,
+                "verifier_bpb": result.val_bpb,
+                "is_frontier": record.id in {r.id for r in self._node.graph.frontier()},
+            }
+            self.on_verification(payload)
+            await self._node.gossip.broadcast_verification(payload)
             return
 
         # Result differs — initiate challenge
+        available_verifiers = count_independent_verifiers(
+            self._node, record, self.node_id
+        )
+        if available_verifiers == 0:
+            log.warning(
+                "Challenge for %s skipped: no independent compatible verifiers in graph",
+                record.id[:8],
+            )
+            return
+
         log.info(
             "Challenging experiment %s: claimed %.6f, got %.6f",
             record.id[:8],
             record.val_bpb,
             result.val_bpb,
         )
+        payload = {
+            "event_id": f"challenge:{record.id}:{self.node_id}",
+            "experiment_id": record.id,
+            "challenger_id": self.node_id,
+            "challenger_bpb": result.val_bpb,
+            "challenger_gpu": self.gpu_model,
+        }
         challenge = PendingChallenge(
             experiment=record,
             challenger_id=self.node_id,
             challenger_bpb=result.val_bpb,
             challenger_gpu=self.gpu_model,
+            required_responses=min(VERIFIER_COUNT, available_verifiers),
         )
         self._pending[record.id] = challenge
-
-        await self._node.gossip.broadcast_challenge(
-            {
-                "experiment_id": record.id,
-                "challenger_id": self.node_id,
-                "challenger_bpb": result.val_bpb,
-                "challenger_gpu": self.gpu_model,
-            }
-        )
+        self.on_challenge(payload)
+        await self._node.gossip.broadcast_challenge(payload)
 
         # Wait for verifier responses, then resolve
         asyncio.create_task(self._await_resolution(record.id))
@@ -135,14 +145,25 @@ class ChallengeCoordinator:
         """Called when a challenge is received from the network."""
         experiment_id = payload.get("experiment_id", "")
         challenger_gpu = payload.get("challenger_gpu", "")
+        challenger_id = payload.get("challenger_id", "")
+        event_id = payload.get("event_id", f"challenge:{experiment_id}:{challenger_id}")
 
-        if challenger_gpu != self.gpu_model:
+        if not self.verifier.reputation.record_event(event_id, "challenge"):
+            return
+
+        self.verifier.reputation.verification_performed(challenger_id)
+
+        if not self.verifier.same_gpu_class(challenger_gpu, self.gpu_model):
             return  # Can only verify same GPU class
-        if payload.get("challenger_id") == self.node_id:
+        if challenger_id == self.node_id:
             return  # Don't verify our own challenges
 
         record = self._node.graph.get(experiment_id) if self._node else None
         if record is None:
+            return
+        if record.node_id == self.node_id:
+            return  # Original publisher cannot serve as an independent verifier
+        if not self.verifier.same_gpu_class(record.gpu_model, self.gpu_model):
             return
 
         log.info("Volunteering to verify challenge on %s", experiment_id[:8])
@@ -168,6 +189,9 @@ class ChallengeCoordinator:
             return
 
         response = {
+            "event_id": (
+                f"challenge_response:{record.id}:{challenge['challenger_id']}:{self.node_id}"
+            ),
             "experiment_id": record.id,
             "challenger_id": challenge["challenger_id"],
             "verifier_id": self.node_id,
@@ -176,8 +200,8 @@ class ChallengeCoordinator:
         }
 
         # Broadcast response so challenger (and everyone) sees it
+        self.on_challenge_response(response)
         await self._node.gossip.broadcast_challenge_response(response)
-        self.verifier.reputation.verification_performed(self.node_id)
         log.info(
             "Verification of %s complete: val_bpb=%.6f",
             record.id[:8],
@@ -187,24 +211,38 @@ class ChallengeCoordinator:
     def on_challenge_response(self, payload: dict):
         """Collect verifier responses for challenges we initiated."""
         experiment_id = payload.get("experiment_id", "")
+        verifier_id = payload.get("verifier_id", "")
+        event_id = payload.get(
+            "event_id",
+            f"challenge_response:{experiment_id}:{payload.get('challenger_id', '')}:{verifier_id}",
+        )
+
+        if not self.verifier.reputation.record_event(event_id, "challenge_response"):
+            return
+
+        self.verifier.reputation.verification_performed(verifier_id)
+
         pending = self._pending.get(experiment_id)
         if pending is None:
             return  # Not our challenge
         if pending.challenger_id != self.node_id:
             return
+        if verifier_id in pending.responder_id:
+            return
 
         vr = VerificationResult(
             experiment_id=experiment_id,
-            verifier_node_id=payload["verifier_id"],
+            verifier_node_id=verifier_id,
             verifier_val_bpb=payload["verifier_bpb"],
             verifier_gpu=payload["verifier_gpu"],
             within_tolerance=False,  # Will be determined in resolution
         )
         pending.response.append(vr)
+        pending.responder_id.add(verifier_id)
         log.info(
             "Challenge response %d/%d for %s",
             len(pending.response),
-            VERIFIER_COUNT,
+            pending.required_responses,
             experiment_id[:8],
         )
 
@@ -215,7 +253,7 @@ class ChallengeCoordinator:
             pending = self._pending.get(experiment_id)
             if pending is None:
                 return
-            if len(pending.response) >= VERIFIER_COUNT:
+            if len(pending.response) >= pending.required_responses:
                 break
             await asyncio.sleep(5)
 
@@ -247,29 +285,40 @@ class ChallengeCoordinator:
         if self._node:
             if dispute.outcome == DisputeOutcome.UPHELD:
                 self._node.graph.mark_verified(experiment_id, True)
-            await self._node.gossip.broadcast_dispute(
-                {
-                    "experiment_id": dispute.experiment_id,
-                    "challenger_id": dispute.challenger_id,
-                    "challenger_bpb": dispute.challenger_bpb,
-                    "outcome": dispute.outcome.value,
-                    "ground_truth_bpb": dispute.ground_truth_bpb,
-                    "verifier_count": len(dispute.verifier_result),
-                }
-            )
+            payload = {
+                "event_id": f"dispute:{dispute.experiment_id}:{dispute.challenger_id}",
+                "experiment_id": dispute.experiment_id,
+                "original_node_id": pending.experiment.node_id,
+                "challenger_id": dispute.challenger_id,
+                "challenger_bpb": dispute.challenger_bpb,
+                "outcome": dispute.outcome.value,
+                "ground_truth_bpb": dispute.ground_truth_bpb,
+                "verifier_count": len(dispute.verifier_result),
+            }
+            self.on_dispute(payload)
+            await self._node.gossip.broadcast_dispute(payload)
+
+    def on_verification(self, payload: dict):
+        """Apply a successful spot-check network-wide."""
+        if self._node is None:
+            return
+        apply_verification_event(self._node, self.verifier, payload)
 
     def on_dispute(self, payload: dict):
         """Called when a resolved dispute arrives from the network."""
         outcome = payload.get("outcome", "")
         experiment_id = payload.get("experiment_id", "")
+        if self._node is None:
+            return
+        if not apply_dispute_event(self._node, self.verifier, payload):
+            return
+
         log.info(
             "Dispute result for %s: %s (ground_truth=%.6f)",
             experiment_id[:8],
             outcome,
             payload.get("ground_truth_bpb", 0),
         )
-        if self._node and outcome == DisputeOutcome.UPHELD.value:
-            self._node.graph.mark_verified(experiment_id, True)
         # Clean up if we had a pending challenge for this
         self._pending.pop(experiment_id, None)
 

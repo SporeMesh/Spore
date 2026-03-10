@@ -105,6 +105,7 @@ class TestVerifier:
         verifier = Verifier(reputation)
         assert verifier.get_tolerance("H100-SXM5-80GB") == 0.0015
         assert verifier.get_tolerance("RTX_4090") == 0.002
+        assert verifier.get_tolerance("NVIDIA GeForce RTX 3060") == 0.003
         assert verifier.get_tolerance("unknown_gpu") == DEFAULT_TOLERANCE
 
     def test_verify_within_tolerance(self, reputation, keypair):
@@ -193,9 +194,9 @@ class TestDisputeResolution:
         )
 
         assert dispute.outcome == DisputeOutcome.UPHELD
-        # Original node wins, challenger loses
-        assert reputation.get_score(node_id) == 1.0
-        assert reputation.get_score("challenger_1") == -5.0
+        assert dispute.ground_truth_bpb == 0.9501
+        assert reputation.get_score(node_id) == 0.0
+        assert reputation.get_score("challenger_1") == 0.0
 
     def test_dispute_rejected(self, reputation, keypair):
         """Original was fabricated."""
@@ -218,9 +219,9 @@ class TestDisputeResolution:
         )
 
         assert dispute.outcome == DisputeOutcome.REJECTED
-        # Challenger wins, original node loses
-        assert reputation.get_score("challenger_1") == 1.0
-        assert reputation.get_score(node_id) == -5.0
+        assert dispute.ground_truth_bpb == 0.96
+        assert reputation.get_score("challenger_1") == 0.0
+        assert reputation.get_score(node_id) == 0.0
 
 
 class TestSuspiciousCheck:

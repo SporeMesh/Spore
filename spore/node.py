@@ -21,6 +21,7 @@ from nacl.signing import SigningKey
 
 from .challenge import ChallengeCoordinator
 from .gossip import GossipServer
+from .gpu import normalize_gpu_model
 from .graph import ResearchGraph
 from .record import ExperimentRecord, generate_keypair
 from .store import ArtifactStore
@@ -107,6 +108,7 @@ class SporeNode:
             on_challenge=self.challenger.on_challenge,
             on_challenge_response=self.challenger.on_challenge_response,
             on_dispute=self.challenger.on_dispute,
+            on_verification=self.challenger.on_verification,
             on_code_request=self._on_code_request,
         )
         self._listener: list[Callable[[ExperimentRecord], None]] = []
@@ -122,9 +124,9 @@ class SporeNode:
             import torch
 
             if torch.cuda.is_available():
-                return torch.cuda.get_device_name(0).replace(" ", "_")
+                return normalize_gpu_model(torch.cuda.get_device_name(0))
             if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                return "Apple_MPS"
+                return "APPLE_MPS"
         except ImportError:
             pass
         return "CPU"

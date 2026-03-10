@@ -1,6 +1,5 @@
 """Tests for ExperimentRunner — training execution and result parsing."""
 
-
 from test.conftest import make_record
 
 import pytest
