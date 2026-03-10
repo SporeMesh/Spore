@@ -3,6 +3,7 @@
 import {
   getStat, getGraph, getFrontier, getExperiment, getAncestor,
   getChildren, getLeaderboard, getNodeReputation, searchExperiment, getArtifact,
+  getNodeProfile,
   shortCid, formatParam, statusColor, timeAgo, escHtml,
 } from './api.js';
 import { initDag, renderDag, updateSelection, resetHighlight } from './dag.js';
@@ -63,6 +64,7 @@ function renderSearchResult(results) {
       <span class="status-badge ${r.status}">${r.status}</span>
       <span style="color:var(--cyan)">${shortCid(r.id)}</span>
       <span style="color:var(--text)">${r.val_bpb.toFixed(6)}</span>
+      <span style="color:var(--text-dim)">${escHtml(r.node_display_name || shortCid(r.node_id))}</span>
       <span style="color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${escHtml(r.description.slice(0, 60))}</span>
     </div>
   `).join('');
@@ -145,7 +147,10 @@ async function refreshLeaderboard() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td style="color:var(--cyan);cursor:pointer" onclick="window.__selectNode && window.__selectNode('${r.node_id}')">${shortCid(r.node_id)}</td>
+      <td style="cursor:pointer" onclick="window.__selectNode && window.__selectNode('${r.node_id}')">
+        <div style="color:var(--text)">${escHtml(r.display_name || '—')}</div>
+        <div style="color:var(--cyan);font-size:11px">${shortCid(r.node_id)}</div>
+      </td>
       <td style="color:${r.score >= 0 ? 'var(--green)' : 'var(--red)'}">${r.score.toFixed(1)}</td>
       <td>${r.experiments_published}</td>
       <td>${r.experiments_verified}</td>
@@ -161,7 +166,10 @@ async function selectExperiment(cid) {
   selectedNode = cid;
   const r = await getExperiment(cid);
   if (r.error) return;
-  const rep = await getNodeReputation(r.node_id);
+  const [rep, profile] = await Promise.all([
+    getNodeReputation(r.node_id),
+    getNodeProfile(r.node_id),
+  ]);
 
   document.getElementById('detail-empty').style.display = 'none';
   const content = document.getElementById('detail-content');
@@ -249,8 +257,12 @@ async function selectExperiment(cid) {
       </div>
       <div class="detail-field">
         <label>Node</label>
-        <div class="value cid" onclick="window.__selectNode && window.__selectNode('${r.node_id}')">${shortCid(r.node_id)}</div>
+        <div class="value" onclick="window.__selectNode && window.__selectNode('${r.node_id}')">
+          ${escHtml(profile.display_name || r.node_display_name || shortCid(r.node_id))}
+          <span class="cid" style="display:block;font-size:10px">${shortCid(r.node_id)}</span>
+        </div>
       </div>
+      ${profile && !profile.error && (profile.bio || profile.website || profile.donation_address) ? `<div class="detail-field"><label>Profile</label><div class="value">${profile.bio ? escHtml(profile.bio) : ''}${profile.website ? `<div><a href="${escHtml(profile.website)}" target="_blank" rel="noreferrer">${escHtml(profile.website)}</a></div>` : ''}${profile.donation_address ? `<div style="font-size:11px;color:var(--text-dim)">Donation: ${escHtml(profile.donation_address)}</div>` : ''}</div></div>` : ''}
       <div class="detail-field">
         <label>Reputation</label>
         <div class="value">${rep.score.toFixed(1)} · ${rep.experiments_published} published · ${rep.experiments_verified} verified</div>

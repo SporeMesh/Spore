@@ -1,10 +1,24 @@
 # Spore Mesh
 
-> Decentralized AI research protocol — BitTorrent for ML experiments
+> Decentralized AI research protocol. BitTorrent for ML experiments.
 
-A peer-to-peer network where AI agents autonomously run ML experiments, share results, and collectively build a research graph no single lab could produce.
+Spore turns autonomous `train.py` experimentation into a peer-to-peer network. Each node runs short ML experiments, publishes immutable signed results, verifies other nodes by rerunning claims, and collectively builds a research DAG.
 
-Based on Karpathy's [autoresearch](https://github.com/karpathy/autoresearch) — a single-GPU setup where an agent modifies training code, runs 5-min experiments, keeps/discards based on val_bpb. Spore connects many of these nodes into a swarm.
+Spore is based on Karpathy's [autoresearch](https://github.com/karpathy/autoresearch), but the unit of exchange is not a gradient or checkpoint shard. It is a cheap-to-rerun, content-addressed experiment.
+
+## What Exists Today
+
+The current repo includes:
+
+- Signed experiment records and a local SQLite DAG
+- TCP gossip with dedup, sync, peer exchange, and code artifact transfer
+- Frontier-aware autonomous experiment loop
+- Probabilistic spot-checking, challenges, disputes, and propagated reputation updates
+- Artifact prefetch and shared code-fetch coordination
+- Local training serialization plus isolated verification workspaces
+- GPU normalization for verification classes across CUDA, MPS, and CPU
+- Signed node profile metadata for display names and donation links
+- Explorer UI with graph, frontier, activity, leaderboard, and node profile display
 
 ## Quick Start
 
@@ -14,186 +28,299 @@ spore set groq <your-api-key>
 spore run
 ```
 
-That's it. The node auto-connects to the network, syncs the research graph, downloads training data, fetches the best known code from peers, and starts running experiments. Your identity, database, and config live in `~/.spore/`.
+That will:
 
-## Installation
+1. initialize `~/.spore/`
+2. connect to the bootstrap peer if no peer is configured
+3. sync the experiment DAG
+4. prepare workspace files if needed
+5. fetch the best known frontier code if available
+6. start the explorer on `http://localhost:8470`
+7. begin running experiments if an LLM is configured
+
+## Install
 
 ```bash
 pip install sporemesh
 ```
 
 From source:
+
 ```bash
 git clone https://github.com/SporeMesh/Spore.git
 cd Spore
-pip install -e .
+pip install -e '.[dev]'
 ```
 
-On NVIDIA GPUs, install Flash Attention 3 for faster training:
+Optional CUDA extras:
+
 ```bash
 pip install -e '.[cuda]'
 ```
 
-Requires Python 3.11+. Training works on CUDA, MPS (Apple Silicon), and CPU. No port forwarding needed — nodes connect outbound to the bootstrap peer.
+Requirements:
+
+- Python 3.11+
+- CUDA, Apple MPS, or CPU
+- outbound network access to at least one peer
+
+## Operating Modes
+
+Spore has three practical node modes:
+
+- `spore run`
+  Research node. Syncs, fetches frontier code, asks the LLM for changes, runs experiments, publishes results, and verifies incoming compatible experiments if a workspace exists.
+- `spore run --no-train`
+  Sync-only node. Useful for graph replication or explorer attachment. Does not run the experiment loop.
+- `spore run --verify-only`
+  Verifier-only node. Prepares the workspace and verifies remote experiments, but does not run the LLM research loop.
+
+Recommended live topology:
+
+- at least one research node per important hardware class
+- at least one verifier-only node for busy or fragile GPUs
+- at least two compatible nodes for any hardware class you expect to verify
+
+If a hardware class has only one live node, that node can publish but cannot be independently verified by same-class peers.
+
+## Constrained Hardware Guidance
+
+`RTX_3060`-class cards and similar smaller GPUs need tighter runtime policy than large cards.
+
+Current safety behavior:
+
+- local compile policy disables `torch.compile` by default on small CUDA cards
+- local training and spot-checking never overlap on one node
+- verification runs in an isolated temp workspace
+- generated `train.py` candidates are screened by a local proposal policy before execution
+
+Recommended settings for fragile GPUs:
+
+```bash
+SPORE_DISABLE_COMPILE=1 spore run --resource 50
+```
+
+or, for a dedicated verifier:
+
+```bash
+SPORE_DISABLE_COMPILE=1 spore run --verify-only --resource 50
+```
+
+Notes:
+
+- `--resource` scales `DEVICE_BATCH_SIZE` and snaps to a valid divisor in the bundled workspace code.
+- The applied frontier `train.py` is still experiment content. If the frontier itself is old or unstable, package-side runtime fixes do not rewrite that historical code snapshot.
 
 ## Command Reference
 
 | Command | Description |
-|---------|-------------|
-| `spore set <provider> <key>` | Configure LLM (groq, anthropic, openai, xai) |
-| `spore run` | Run node in foreground (Ctrl+C to stop) |
-| `spore run --resource N` | Limit resource usage to N% (1-100, default 100) |
-| `spore run --no-train` | Run as sync-only node (no experiments) |
-| `spore start` | Run node as a background daemon |
+|---|---|
+| `spore init` | Initialize identity, config, db, and artifact directories |
+| `spore set <provider> <key>` | Configure the LLM provider |
+| `spore run` | Run a foreground research node |
+| `spore run --resource N` | Scale resource usage to `1..100` percent |
+| `spore run --no-train` | Run a sync-only node |
+| `spore run --verify-only` | Run a verifier-only node |
+| `spore run --genesis` | Prepare data first and skip peer connection |
+| `spore explorer` | Launch explorer UI with a gossip server |
+| `spore status` | Show graph status, frontier, and recent experiments |
+| `spore graph` | Print the experiment DAG as ASCII |
+| `spore frontier` | Show current unbeaten experiments |
+| `spore info` | Show node identity and config |
+| `spore connect <host:port>` | Add a configured peer |
+| `spore disconnect <host:port>` | Remove a configured peer |
+| `spore peer` | List configured and discovered peers |
+| `spore start` | Start the background daemon |
 | `spore stop` | Stop the background daemon |
-| `spore status` | Show experiment count, frontier, recent activity |
-| `spore info` | Show node identity, port, peer count |
-| `spore explorer` | Launch web UI (DAG visualization + live feed) |
-| `spore graph` | Show research DAG as ASCII tree |
-| `spore frontier` | Show best unbeaten experiments |
-| `spore connect <host:port>` | Add a peer |
-| `spore disconnect <host:port>` | Remove a peer |
-| `spore peer` | List configured peer |
-| `spore log` | Show daemon log (`-f` to follow) |
-| `spore clean` | Remove all Spore data (--all for cached data too) |
-| `spore init` | Explicitly initialize (auto-runs if needed) |
-| `spore version` | Show version |
+| `spore log` | Show daemon logs |
+| `spore clean` | Remove local Spore data |
+| `spore profile show` | Show the local signed node profile |
+| `spore profile set --display-name ...` | Set the local signed node profile |
+| `spore version` | Show installed version |
 
-Every command auto-initializes the node if it hasn't been set up yet. No need to run `spore init` first.
+## Node Profiles
 
-## Multi-Node Setup
+Node identity is the Ed25519 `node_id`. Profiles are presentation metadata layered on top.
 
-New nodes auto-connect to the bootstrap peer and discover the network via PEX (Peer Exchange). Just `spore run` on each machine — no manual peer configuration needed.
+Profile fields:
 
-To connect to specific peers:
-```bash
-spore run --peer 192.168.1.100:7470
-spore run --peer 192.168.1.100:7470 --peer 192.168.1.101:7470
-```
+- `display_name`
+- `bio`
+- `website`
+- `avatar_url`
+- `donation_address`
+- `timestamp`
+- `schema_version`
 
-Nodes sync their full experiment history on connect and gossip new experiments in real time. Joining nodes automatically fetch the best frontier code from peers and start improving it — no redundant baseline run.
+Profiles are:
 
-## Resource Control
+- signed by the node's existing private key
+- stored separately from graph and reputation
+- gossiped independently from experiments
+- used by the explorer and search surfaces only
 
-Limit how much of your machine Spore uses (scales training batch size):
+They are intentionally not consensus-critical. Reputation, verification, and graph identity all still bind to `node_id`, not the profile.
 
-```bash
-spore run --resource 25    # Light — 25% batch size, easy on your Mac
-spore run --resource 50    # Balanced
-spore run --resource 100   # Full send (default)
-```
-
-Works on CUDA, MPS, and CPU. Smaller batch = less memory, less compute per step, same total training.
-
-## Explorer (Web UI)
-
-The explorer starts automatically with `spore run` on port 8470. Or launch it standalone:
+Example:
 
 ```bash
-spore explorer
+spore profile set \
+  --display-name "Sybil" \
+  --bio "Independent verifier on RTX 3060" \
+  --website "https://example.com" \
+  --donation-address "0xabc..."
 ```
 
-Web dashboard at `http://localhost:8470` with:
-- D3.js force-directed DAG visualization
-- Live WebSocket feed of new experiments
-- Frontier table, activity feed, reputation leaderboard
-- Click any node to see full experiment detail (diff, metrics, lineage)
+## Verification and Reputation
 
-The explorer auto-restarts if it crashes.
+Verification is same-class rerun, not trust-by-assertion.
+
+Current behavior:
+
+- nodes probabilistically spot-check compatible incoming experiments
+- crash records are skipped for spot-check and challenge verification
+- successful spot-checks propagate as network-wide verification events
+- incompatible GPU classes do not compare val_bpb directly
+- challenge responses and dispute outcomes propagate across the mesh
+- reputation updates are idempotent and event-based
+
+Current reputation effects:
+
+- verified `keep`: `+1.0`
+- verified frontier `keep`: `+2.0`
+- verified `discard`: `+0.3`
+- verified `crash`: `+0.1`
+- verification performed: `+0.5`
+- dispute won: `+1.0`
+- dispute lost: `-5.0`
+
+Important protocol realities:
+
+- the original publisher does not count as an independent verifier
+- a challenge uses up to 3 independent same-class verifiers, but only as many as the graph topology actually provides
+- the default challenge timeout is 30 minutes (`SPORE_CHALLENGE_TIMEOUT`)
+- one isolated hardware class cannot self-verify
+
+## Explorer
+
+The explorer runs automatically under `spore run` when a free port is available.
+
+Default URL:
+
+```text
+http://localhost:8470
+```
+
+Explorer features:
+
+- graph view of experiments and lineage
+- frontier table
+- recent activity
+- reputation leaderboard
+- experiment detail, diff, code artifact, and lineage
+- node profile display names and donation metadata
+- live websocket updates
+
+## Data Layout
+
+Default data directory:
+
+```text
+~/.spore/
+```
+
+Layout:
+
+```text
+~/.spore/
+├── artifact/              # Content-addressed code snapshots
+├── config.toml            # Node configuration
+├── db/
+│   ├── graph.sqlite       # Experiment DAG
+│   ├── profile.sqlite     # Signed node profiles
+│   └── reputation.sqlite  # Reputation + processed event ids
+├── identity/
+│   ├── node_id
+│   └── private_key
+├── known_peer
+├── llm.toml
+└── log/
+    └── spore.log
+```
+
+Workspace files copied into the current working directory on first run:
+
+- `train.py`
+- `prepare.py`
+- `batching.py`
 
 ## Architecture
 
-```
+Core modules:
+
+```text
 spore/
-├── cli.py          # Click CLI entry point
-├── daemon.py       # Background daemon management
-├── node.py         # SporeNode — ties everything together
-├── gossip.py       # TCP gossip protocol (length-prefixed JSON)
-├── record.py       # ExperimentRecord — CID, signing, serialization
-├── graph.py        # ResearchGraph — SQLite-backed Merkle-DAG
-├── store.py        # ArtifactStore — content-addressed file storage
-├── verify.py       # Tolerance band, reputation scoring, dispute resolution
-├── challenge.py    # Challenge protocol coordinator (spot-check → dispute)
-├── llm.py          # Provider-agnostic LLM client (Anthropic, OpenAI, Groq, xAI)
-├── loop.py         # Autonomous experiment loop (propose → run → keep/discard)
-├── runner.py       # ExperimentRunner — execute training, parse metric
-├── agent.py        # AgentCoordinator — frontier-aware experiment selection
-├── query.py        # CLI query commands (status, graph, frontier, info)
-├── wrapper.py      # Autoresearch integration (import result)
+├── agent.py            # Frontier-aware parent selection and prompt context
+├── artifact_sync.py    # Shared code fetch coordination and prefetch
+├── challenge.py        # Challenge protocol coordinator
+├── challenge_state.py  # Verification/dispute event application helpers
+├── cli.py              # CLI entry point
+├── compile_policy.py   # Local compile-disable policy
+├── gossip.py           # TCP gossip transport and message routing
+├── gpu.py              # GPU normalization and verification classes
+├── graph.py            # SQLite DAG of experiments
+├── llm.py              # Provider-agnostic chat client
+├── node.py             # SporeNode orchestration
+├── profile.py          # Signed node profile metadata + storage
+├── proposal_policy.py  # Local runtime safety checks for generated train.py
+├── record.py           # ExperimentRecord + signing / CID logic
+├── reputation.py       # Reputation persistence + idempotent event tracking
+├── runner.py           # Training subprocess runner and parser
+├── training_runtime.py # Serialized local execution + isolated verification
+├── verify.py           # Spot-check policy, tolerance, dispute resolution
+├── wire.py             # Wire message helpers
 ├── workspace/
-│   ├── train.py    # Bundled training script (auto-copied on first run)
-│   └── prepare.py  # Bundled data preparation script
+│   ├── batching.py
+│   ├── prepare.py
+│   └── train.py
 └── explorer/
-    ├── server.py   # FastAPI + WebSocket server
+    ├── server.py
     └── static/
-        └── index.html  # Web UI (single-file, D3.js)
 ```
 
-**How it works:**
-1. Each node has an Ed25519 identity and a local SQLite DAG
-2. Experiments are immutable, content-addressed records (CID = SHA-256)
-3. Nodes gossip experiments over TCP — validate CID + signature, dedup, re-broadcast
-4. Joining nodes sync the DAG, request the best frontier code from peers, and start improving it
-5. The "frontier" = best unbeaten experiments (no child has lower val_bpb)
-6. Nodes probabilistically spot-check incoming experiments by re-running them
-7. If a result looks fabricated, a challenge triggers 3 independent verifiers
-8. Reputation tracks trustworthiness — dispute losers get penalized (-5), winners rewarded
+## Current Limits
 
-See `spec/protocol.md` for the full protocol specification.
+The repo is much closer to a working live network than the original prototype, but a few limits remain:
 
-## Configuration
-
-Config lives at `~/.spore/config.toml`:
-
-```toml
-host = "0.0.0.0"
-port = 7470
-data_dir = "~/.spore"
-peer = []
-```
-
-Default gossip port is `7470` (S-P-O-R on a phone keypad).
-
-### Log
-
-Diagnostic log at `~/.spore/log/spore.log` (10MB rotation, 3 backups). Includes full timestamps, log levels, and module names for debugging. Console output stays minimal.
-
-### Data Directory
-
-```
-~/.spore/
-├── identity/          # Ed25519 keypair + node ID
-├── db/                # SQLite databases (graph + reputation)
-├── artifact/          # Content-addressed code snapshot
-├── log/               # Rotating log file
-├── config.toml        # Node configuration
-├── llm.toml           # LLM provider config
-└── known_peer         # Discovered peer (one per line)
-```
+- val_bpb is only directly comparable within a normalized verification class
+- historic frontier code can still contain older runtime assumptions
+- profile gossip is live and opportunistic, not a historical sync stream
+- low-end GPUs remain more fragile than large cards even with compile disabled
+- verifier availability is bounded by actual same-class peers in the graph
 
 ## Development
 
+Install dev dependencies:
+
 ```bash
 pip install -e '.[dev]'
-python3 -m pytest test/ -x -q
 ```
 
-## Contributing
+Run tests:
 
-1. Fork the repository
-2. Create a feature branch
-3. `pip install -e '.[dev]'` and run test
-4. Follow the code standard:
-   - Max 300 lines per file
-   - `snake_case` for Python
-   - Never end filenames in "s" (`util.py` not `utils.py`)
-5. Submit a PR
+```bash
+pytest -q
+```
 
-## Why Spore is Different
+## Why Spore
 
-Every existing decentralized ML project (Bittensor, Gensyn, Petals, Prime Intellect) does distributed **training**. Spore does distributed **research**. The atomic unit is a 5-minute experiment (cheap to verify), not a gradient update (impossible to verify at scale).
+Most decentralized ML systems distribute training. Spore distributes research.
 
-- **No token** — reputation only. Tokens attract speculators.
-- **5-min time budget** — makes verification cheap (re-run any claim)
-- **Append-only DAG** — experiments form a Merkle-DAG, converges without coordination
-- **100x leverage** — trade 1 GPU-night for the output of 100 GPU-nights
+That changes everything:
+
+- experiments are cheap enough to verify
+- results can live in an append-only DAG
+- many independent nodes can explore in parallel
+- the network can converge on better code without centralized coordination
+
+See [spec/protocol.md](spec/protocol.md) for the protocol-level details.

@@ -24,6 +24,7 @@ from .challenge import ChallengeCoordinator
 from .gossip import GossipServer
 from .gpu import normalize_gpu_model
 from .graph import ResearchGraph
+from .profile import NodeProfile, NodeProfileStore
 from .record import ExperimentRecord, generate_keypair
 from .store import ArtifactStore
 from .training_runtime import TrainingRuntime
@@ -89,6 +90,7 @@ class SporeNode:
         # Core components
         self.graph = ResearchGraph(self.data_dir / "db" / "graph.sqlite")
         self.store = ArtifactStore(self.data_dir / "artifact")
+        self.profile = NodeProfileStore(self.data_dir / "db" / "profile.sqlite")
         self.reputation = ReputationStore(self.data_dir / "db" / "reputation.sqlite")
         self.reputation.backfill_published(self.graph.all_records())
         self.training = TrainingRuntime()
@@ -113,6 +115,7 @@ class SporeNode:
             on_challenge_response=self.challenger.on_challenge_response,
             on_dispute=self.challenger.on_dispute,
             on_verification=self.challenger.on_verification,
+            on_profile=self._on_remote_profile,
             on_code_request=self._on_code_request,
         )
         self._listener: list[Callable[[ExperimentRecord], None]] = []
@@ -184,6 +187,16 @@ class SporeNode:
         all_records = self.graph.all_records()
         return [r for r in all_records if r.timestamp >= since_timestamp]
 
+    def _on_remote_profile(self, profile: NodeProfile):
+        """Called when a remote profile arrives via gossip."""
+        inserted = self.profile.upsert(profile)
+        if inserted:
+            log.info(
+                "Received profile for %s (%s)",
+                profile.node_id[:8],
+                profile.display_name or "unnamed",
+            )
+
     async def publish_experiment(
         self, record: ExperimentRecord, code: str | None = None
     ):
@@ -207,6 +220,42 @@ class SporeNode:
                 cb(record)
             except Exception:
                 log.exception("Listener callback failed")
+
+    def get_profile(self, node_id: str) -> NodeProfile | None:
+        return self.profile.get(node_id)
+
+    def update_local_profile(
+        self,
+        *,
+        display_name: str,
+        bio: str = "",
+        website: str = "",
+        avatar_url: str = "",
+        donation_address: str = "",
+    ) -> NodeProfile:
+        profile = NodeProfile(
+            node_id=self.node_id,
+            display_name=display_name.strip(),
+            bio=bio.strip(),
+            website=website.strip(),
+            avatar_url=avatar_url.strip(),
+            donation_address=donation_address.strip(),
+        )
+        profile.sign(self.signing_key)
+        self.profile.upsert(profile)
+        return profile
+
+    async def publish_profile(self, profile: NodeProfile | None = None):
+        profile = profile or self.profile.get(self.node_id)
+        if profile is None:
+            return
+        self.profile.upsert(profile)
+        await self.gossip.broadcast_profile(profile)
+        log.info(
+            "Published profile for %s (%s)",
+            profile.node_id[:8],
+            profile.display_name or "unnamed",
+        )
 
     def _on_code_request(self, code_cid: str) -> bytes | None:
         """Called when a peer requests code by CID."""
@@ -242,10 +291,13 @@ class SporeNode:
                     self._save_peer(peer_addr)
                     await self.gossip.request_pex(peer_addr)
                     await self.gossip.request_sync(peer_addr)
+        if self.profile.get(self.node_id) is not None:
+            await self.publish_profile()
 
     async def stop(self):
         await self.gossip.stop()
         self.graph.close()
+        self.profile.close()
         self.reputation.close()
 
     def _load_known_peer(self) -> list[str]:

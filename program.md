@@ -1,114 +1,298 @@
-# autoresearch
+# Spore Program
 
-This is an experiment to have the LLM do its own research.
+This file describes the current operating doctrine for a live Spore network.
 
-## Setup
+It is not the wire spec. It is the practical program: how nodes are expected to behave, what safety rules exist locally, and how to run the network without self-inflicted failure.
 
-To set up a new experiment, work with the user to:
+## 1. Goal
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
-2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
+Spore exists to discover better `train.py` variants through many cheap, verifiable experiments.
 
-Once you get confirmation, kick off the experimentation.
+The network should optimize for:
 
-## Experimentation
+- more valid experiments
+- faster convergence on useful code
+- cheap independent reruns
+- low operational fragility
+- identity and attribution without turning metadata into consensus
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+## 2. Node Roles
 
-**What you CAN do:**
-- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+Spore currently supports three useful node roles.
 
-**What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
-- Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
+### 2.1 Research Node
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+`spore run`
 
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+Responsibilities:
 
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
+- sync the graph
+- fetch frontier code
+- ask the configured LLM for the next candidate
+- run local experiments
+- publish records and code artifacts
+- verify compatible remote experiments if a workspace exists
 
-**The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
+### 2.2 Verifier-Only Node
 
-## Output format
+`spore run --verify-only`
 
-Once the script finishes it prints a summary like this:
+Responsibilities:
 
-```
----
-val_bpb:          0.997900
-training_seconds: 300.1
-total_seconds:    325.9
-peak_vram_mb:     45060.2
-mfu_percent:      39.80
-total_tokens_M:   499.6
-num_steps:        953
-num_params_M:     50.3
-depth:            8
-```
+- sync the graph
+- prepare the workspace
+- fetch code artifacts
+- rerun compatible experiments
+- participate in challenges and disputes
 
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
+Use this when you want a GPU to spend its time stabilizing the network instead of generating new proposals.
 
-```
-grep "^val_bpb:" run.log
-```
+### 2.3 Sync-Only Node
 
-## Logging results
+`spore run --no-train`
 
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
+Responsibilities:
 
-The TSV has a header row and 5 columns:
+- sync the graph
+- gossip data
+- optionally host explorer surfaces
 
-```
-commit	val_bpb	memory_gb	status	description
-```
+This is not enough for verification because no training workspace is attached.
 
-1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
-3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
-4. status: `keep`, `discard`, or `crash`
-5. short text description of what this experiment tried
+## 3. Identity
+
+The protocol identity is the Ed25519 `node_id`.
+
+Everything consensus-relevant ties to that:
+
+- experiment signatures
+- challenge participation
+- verification credit
+- dispute outcomes
+- reputation accounting
+
+Presentation metadata is separate.
+
+## 4. Node Profile Metadata
+
+Profiles are signed side-channel metadata, not protocol identity.
+
+Fields:
+
+- `display_name`
+- `bio`
+- `website`
+- `avatar_url`
+- `donation_address`
+- `timestamp`
+- `schema_version`
+
+Design rules:
+
+- `display_name`, not `username`
+- no protocol-level uniqueness
+- no profile field affects reputation or verification
+- wallet and donation metadata are optional and replaceable later
+
+This lets explorers show human-readable labels without creating name-squatting or identity-recovery problems.
+
+## 5. Experiment Program
+
+The local research loop is:
+
+1. sync the graph
+2. identify the best compatible frontier
+3. fetch and apply the frontier code
+4. ask the LLM for a full replacement `train.py`
+5. validate the returned code locally
+6. run training
+7. publish result and code snapshot
+8. keep or revert locally
+
+This program is intentionally simple. Spore should improve by many cheap experiments, not by making the control plane cleverer than the research itself.
+
+## 6. Local Proposal Safety Policy
+
+Generated code should not be trusted just because it parses.
+
+Current local policy rejects candidates that:
+
+- use obviously broken identifiers like `MAX_SEQ_SIZE`
+- introduce forbidden runtime features such as `subprocess`, `multiprocessing`, `socket`, `ctypes`, or process-kill logic
+- add new `torch.compile` call sites
+- scale model size past the local safe envelope on constrained hardware
+
+On constrained nodes, the policy currently prevents oversized changes to:
+
+- `DEPTH`
+- `ASPECT_RATIO`
+- `HEAD_DIM`
+- `TOTAL_BATCH_SIZE`
+- the derived `DEPTH * ASPECT_RATIO` model-width envelope
+
+Reason:
+
+The network should not repeatedly rediscover that a `3060` can crash on ambitious proposals. Local policy should reject bad candidates before they waste GPU time or flood the graph with avoidable crashes.
+
+## 7. Runtime Safety Rules
+
+### 7.1 Compile Policy
+
+Small CUDA cards default to compile-disabled mode. The local runtime sets:
+
+- `SPORE_DISABLE_COMPILE=1`
+- `TORCHINDUCTOR_COMPILE_THREADS=1`
+
+This is a stability policy, not a benchmark policy.
+
+### 7.2 Serialized Local Work
+
+One node should not simultaneously:
+
+- run its own research experiment
+- run a spot-check
+- run challenge verification
+
+Spore now serializes local training work with a single runtime lock.
+
+### 7.3 Isolated Verification Workspace
+
+Spot-checks and challenge verifications run in a temporary copied workspace.
+
+Reason:
+
+- no accidental overwriting of the active `train.py`
+- no verification mutation leaking into local research state
+
+## 8. Verification Program
+
+Verification should be cheap, same-class, and attributable.
+
+Current behavior:
+
+- incoming compatible experiments are probabilistically selected for spot-check
+- crash records are skipped
+- if a rerun is within tolerance, a verification event is propagated
+- if it falls outside tolerance, a challenge is opened
+- compatible independent verifiers volunteer
+- the challenger resolves the dispute after collecting responses or timing out
+
+Important constraints:
+
+- the original publisher is not an independent verifier
+- cross-class val_bpb is not authoritative
+- no same-class peers means no independent verification
+
+## 9. Reputation Program
+
+Reputation is event-based and idempotent.
+
+That means:
+
+- nodes should be able to receive the same propagated event multiple times
+- score changes should only apply once per `event_id`
+- explorer views should derive from the accumulated store, not local ephemeral memory
+
+Current score semantics:
+
+- published count is tracked separately and does not itself change score
+- successful verification of a record rewards the publisher
+- performing a verification rewards the verifier
+- dispute winners and losers get asymmetric outcomes
+
+The wrong behavior that used to exist and must never return:
+
+- issuing a challenge by itself must not earn verification credit
+
+## 10. Artifact Program
+
+Records are not enough. Verification needs the exact code snapshot.
+
+Current artifact doctrine:
+
+- code snapshots are content-addressed by `code_cid`
+- a node should prefetch code when a remote experiment arrives
+- multiple code fetches for the same artifact should share one inflight request
+- the fetched bytes must hash back to the requested CID before caching
+
+The practical consequence is important:
+
+experiment gossip can look healthy while verification still fails if artifact availability is weak.
+
+## 11. Hardware Classes
+
+Spore currently uses normalized verification classes rather than raw device names.
+
+Examples:
+
+- `NVIDIA GeForce RTX 3060` and `RTX_3060` normalize to the same class
+- Apple Metal devices normalize to `APPLE_MPS`
+- CPU-only nodes normalize to `CPU`
+
+This is better than exact-string matching, but it is still an approximation.
+
+Future work should include richer capability bucketing for:
+
+- Apple MPS families
+- CPU nodes
+- mixed-memory or throughput-variant GPUs
+
+## 12. Resource Control
+
+`--resource N` scales batch size, but only within the runtime assumptions of the applied `train.py`.
+
+Operational guidance:
+
+- `50` and `100` are the safest live settings on fragile research nodes
+- arbitrary values like `70` are only safe when the applied frontier code includes the newer batch-snapping logic
+
+This is the important distinction:
+
+- package runtime fixes affect the host
+- frontier `train.py` remains experiment content and can carry older assumptions
+
+## 13. Recommended Live Topology
+
+For a small public network:
+
+- one stronger research node on the best available GPU
+- one research node on the common commodity class you care about
+- one verifier-only node on that commodity class
 
 Example:
 
-```
-commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
-d4e5f6g	0.000000	0.0	crash	double model width (OOM)
-```
+- `RTX_5090` research
+- `RTX_3060` research
+- `RTX_3060` verifier-only
 
-## The experiment loop
+That gives you:
 
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+- fresh experiments on both classes
+- actual same-class verification on `3060`
+- fewer local resource collisions
 
-LOOP FOREVER:
+## 14. Known Operational Limits
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+Current limitations that operators should understand:
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+- a lone hardware class cannot be independently verified
+- old frontier code can still be unstable even after package fixes
+- low-end CUDA hardware can still hit occasional low-level PyTorch/CUDA failures
+- profile metadata gossips live and is not yet part of historical state sync
 
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
+## 15. What Good Looks Like
 
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
+A healthy Spore network should show:
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
+- non-zero verified experiments
+- non-zero verifications performed
+- challenges only when same-class disagreement is real
+- explorer names resolving from signed profiles
+- minimal crash spam from clearly invalid LLM proposals
 
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+If the graph is growing but verification and reputation stay flat, the first things to check are:
+
+1. same-class peer availability
+2. artifact fetch success
+3. verifier runtime stability
+4. whether the relevant nodes actually have a workspace and verification path enabled

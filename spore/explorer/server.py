@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..node import SporeNode
+from ..profile import NodeProfile
 from ..record import ExperimentRecord, Status
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,30 @@ def _record_to_dict(r: ExperimentRecord) -> dict:
     }
 
 
+def _profile_to_dict(profile: NodeProfile | None) -> dict | None:
+    if profile is None:
+        return None
+    return {
+        "id": profile.id,
+        "node_id": profile.node_id,
+        "display_name": profile.display_name,
+        "bio": profile.bio,
+        "website": profile.website,
+        "avatar_url": profile.avatar_url,
+        "donation_address": profile.donation_address,
+        "timestamp": profile.timestamp,
+        "schema_version": profile.schema_version,
+    }
+
+
+def _record_with_profile(node: SporeNode, record: ExperimentRecord) -> dict:
+    data = _record_to_dict(record)
+    profile = node.get_profile(record.node_id)
+    if profile:
+        data["node_display_name"] = profile.display_name
+    return data
+
+
 def create_app(node: SporeNode) -> FastAPI:
     app = FastAPI(title="Spore Explorer", version="0.1.0")
     ws_manager = ConnectionManager()
@@ -124,7 +149,7 @@ def create_app(node: SporeNode) -> FastAPI:
         nodes = []
         edges = []
         for r in records:
-            nodes.append(_record_to_dict(r))
+            nodes.append(_record_with_profile(node, r))
             if r.parent:
                 edges.append({"source": r.parent, "target": r.id})
 
@@ -137,38 +162,42 @@ def create_app(node: SporeNode) -> FastAPI:
     @app.get("/api/frontier")
     async def frontier(gpu: str | None = None):
         results = node.graph.frontier(gpu_class=gpu)
-        return [_record_to_dict(r) for r in results]
+        return [_record_with_profile(node, r) for r in results]
 
     @app.get("/api/experiment/{cid}")
     async def experiment(cid: str):
         record = node.graph.get(cid)
         if not record:
             return {"error": "not found"}
-        return _record_to_dict(record)
+        return _record_with_profile(node, record)
 
     @app.get("/api/experiment/{cid}/ancestor")
     async def ancestor(cid: str):
         chain = node.graph.ancestors(cid)
-        return [_record_to_dict(r) for r in chain]
+        return [_record_with_profile(node, r) for r in chain]
 
     @app.get("/api/experiment/{cid}/children")
     async def children(cid: str):
         kids = node.graph.children(cid)
-        return [_record_to_dict(r) for r in kids]
+        return [_record_with_profile(node, r) for r in kids]
 
     @app.get("/api/recent")
     async def recent(limit: int = 50):
         records = node.graph.recent(limit=limit)
-        return [_record_to_dict(r) for r in records]
+        return [_record_with_profile(node, r) for r in records]
 
     @app.get("/api/node/{node_id}/experiment")
     async def node_experiment(node_id: str):
         records = node.graph.by_node(node_id)
-        return [_record_to_dict(r) for r in records]
+        return [_record_with_profile(node, r) for r in records]
 
     @app.get("/api/node/{node_id}/reputation")
     async def node_reputation(node_id: str):
         return node.reputation.get_stats(node_id)
+
+    @app.get("/api/node/{node_id}/profile")
+    async def node_profile(node_id: str):
+        return _profile_to_dict(node.get_profile(node_id)) or {"error": "not found"}
 
     @app.get("/api/search")
     async def search(q: str = ""):
@@ -183,15 +212,26 @@ def create_app(node: SporeNode) -> FastAPI:
                 or q_lower in r.description.lower()
                 or (r.node_id and r.node_id.startswith(q))
                 or q_lower in (r.gpu_model or "").lower()
+                or q_lower
+                in (
+                    (
+                        node.get_profile(r.node_id) or NodeProfile(node_id=r.node_id)
+                    ).display_name.lower()
+                )
             ):
-                results.append(_record_to_dict(r))
+                results.append(_record_with_profile(node, r))
             if len(results) >= 20:
                 break
         return results
 
     @app.get("/api/leaderboard")
     async def leaderboard():
-        return node.reputation.leaderboard(limit=50)
+        rows = node.reputation.leaderboard(limit=50)
+        for row in rows:
+            profile = node.get_profile(row["node_id"])
+            if profile:
+                row["display_name"] = profile.display_name
+        return rows
 
     @app.get("/api/artifact/{cid}")
     async def artifact(cid: str):

@@ -1,62 +1,54 @@
 # Spore
 
-> Decentralized AI research protocol — BitTorrent for ML experiments
+> Decentralized AI research protocol. BitTorrent for ML experiments.
 
-**Status**: Active development
-**Repo**: [SporeMesh/Spore](https://github.com/SporeMesh/Spore)
+**Repo**: [SporeMesh/Spore](https://github.com/SporeMesh/Spore)  
+**Status**: active development, live multi-node operation
 
----
+## What Spore Does
 
-## What Spore Is
+Spore connects autonomous `train.py` researchers into a mesh:
 
-A peer-to-peer network where AI agents autonomously run ML experiments, share results, and collectively build a research graph no single lab could produce.
+- nodes run short ML experiments
+- results are published as signed immutable records
+- peers sync a shared DAG of experiments
+- compatible nodes rerun each other for verification
+- reputation updates propagate across the network
 
-Based on Karpathy's [autoresearch](https://github.com/karpathy/autoresearch) — a single-GPU setup where an agent modifies training code, runs 5-min experiments, keeps/discards based on val_bpb. Spore connects many of these nodes into a swarm.
+This is distributed research, not distributed training.
 
-## Why It's Different
+## Current Surface Area
 
-Every existing decentralized ML project (Bittensor, Gensyn, Petals, Prime Intellect) does distributed **training**. Spore does distributed **research**. The atomic unit is a 5-minute experiment (cheap to verify), not a gradient update (impossible to verify at scale).
+- Experiment DAG in SQLite
+- TCP gossip with PEX, sync, and artifact transfer
+- Frontier-aware autonomous experiment loop
+- Spot-check, challenge, dispute, and propagated reputation events
+- Signed node profiles for display names and donation metadata
+- Explorer UI with graph, activity, frontier, and leaderboard
+- Research, sync-only, and verifier-only node modes
 
-## Core Design
+## Start Here
 
-- **No token** — reputation only. Tokens attract speculators.
-- **5-min time budget** — makes verification cheap (re-run any claim for 5 min)
-- **Append-only DAG** — experiments form a Merkle-DAG. Convergent without coordination.
-- **100x leverage** — trade 1 GPU-night for the output of 100 GPU-nights
-- **Device-agnostic** — runs on CUDA, MPS (Apple Silicon), and CPU
-- **NAT-friendly** — outbound connections only, no port forwarding required
+- [README.md](README.md): operator and developer guide
+- [spec/protocol.md](spec/protocol.md): protocol and wire semantics
+- [program.md](program.md): live runtime doctrine, safety rules, and operating recommendations
 
-## Quick Start
+## Key Files
 
-```bash
-pip install sporemesh
-spore set groq <your-api-key>
-spore run
-```
+- `spore/node.py`: node orchestration
+- `spore/gossip.py`: message transport and rebroadcast
+- `spore/record.py`: signed experiment record
+- `spore/profile.py`: signed node profile metadata
+- `spore/challenge.py`: verification/challenge coordinator
+- `spore/reputation.py`: reputation store and event dedupe
+- `spore/loop.py`: experiment loop and proposal validation
+- `spore/runner.py`: training subprocess execution
+- `spore/explorer/server.py`: explorer API
 
-## Key File
+## Recommended Topology
 
-- `spec/protocol.md` — full protocol specification
-- `spore/record.py` — ExperimentRecord dataclass
-- `spore/graph.py` — research DAG (SQLite-backed)
-- `spore/node.py` — network node with bootstrap peer + peer persistence
-- `spore/gossip.py` — TCP gossip protocol with PEX (peer exchange)
-- `spore/loop.py` — autonomous experiment loop (LLM → train → keep/discard)
-- `spore/llm.py` — multi-provider LLM client (Groq, Anthropic, OpenAI, xAI)
-- `spore/runner.py` — training subprocess runner + output parser
-- `spore/agent.py` — frontier-aware experiment selection + prompt building
-- `spore/verify.py` — tolerance band, reputation scoring, dispute resolution
-- `spore/challenge.py` — challenge protocol coordinator (spot-check → dispute)
-- `spore/cli.py` — CLI interface (run, set, clean, status, explorer, etc.)
-- `spore/workspace/` — bundled train.py + prepare.py (auto-copied on first run)
+- one or more research nodes
+- at least one verifier-only node for busy or fragile GPUs
+- at least two compatible nodes per hardware class you want to verify
 
-## Build Path
-
-1. ~~Foundation — data model, graph, content-addressed storage~~
-2. ~~Networking — two nodes on a LAN sharing experiments over TCP~~
-3. ~~Agent coordination — frontier-aware experiment selection~~
-4. ~~Autonomous loop — LLM proposes, runner evaluates, gossip publishes~~
-5. ~~P2P discovery — bootstrap peers, PEX, peer persistence~~
-6. ~~Verification — spot-checking, challenge protocol, reputation~~
-7. ~~Zero-config join — auto-prepare, code fetch from peers, skip baseline~~
-8. Production networking — libp2p, DHT, GossipSub
+Without same-class peers, a node can publish but cannot be independently verified.

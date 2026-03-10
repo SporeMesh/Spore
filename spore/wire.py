@@ -22,6 +22,7 @@ class MessageType:
     CHALLENGE_RESPONSE = "challenge_response"
     DISPUTE = "dispute"
     VERIFICATION = "verification"
+    PROFILE = "profile"
     CODE_REQUEST = "code_request"
     CODE_RESPONSE = "code_response"
 

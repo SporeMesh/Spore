@@ -26,6 +26,7 @@ from .gpu import normalize_gpu_model
 from .llm import LLMClient
 from .llm import load_config as load_llm_config
 from .node import SporeNode
+from .proposal_policy import validate_candidate_code
 from .runner import ExperimentRunner
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,9 @@ Rules:
 - Simpler is better. A tiny improvement that adds complexity is not worth it.
 - Removing code and getting equal/better results is always a win.
 - Everything is fair game: architecture, optimizer, hyperparameters, batch size.
+- Preserve the existing train.py scaffold and identifier names unless necessary.
+- Do not introduce subprocess, multiprocessing, socket, requests, ctypes, or signal-based process control.
+- Prefer small, local changes over aggressive model-size increases on constrained hardware.
 
 Return the FULL modified train.py inside a ```python code block.
 Before the code, write exactly two lines:
@@ -62,6 +66,24 @@ Current train.py:
 ```
 
 Previous invalid response:
+{response}
+"""
+
+POLICY_REPAIR_PROMPT = """\
+Your previous response was rejected by the local runtime policy.
+
+Fix these issues and return the FULL corrected train.py inside a single ```python code block.
+Do not return a diff, patch, explanation, or partial snippet.
+
+Policy issues:
+{issues}
+
+Current train.py:
+```python
+{current_code}
+```
+
+Previous rejected response:
 {response}
 """
 
@@ -272,7 +294,26 @@ class ExperimentLoop:
     ) -> tuple[str | None, str]:
         code = _extract_code(response)
         if _is_valid_full_python_file(code):
-            return code, response
+            issues = validate_candidate_code(code, current_code)
+            if not issues:
+                return code, response
+            console.print(
+                "[yellow]LLM proposal violated local runtime policy, requesting a safer correction.[/]"
+            )
+            repair_prompt = POLICY_REPAIR_PROMPT.format(
+                issues="\n".join(f"- {issue}" for issue in issues),
+                current_code=current_code,
+                response=response,
+            )
+            repaired_response = await asyncio.to_thread(
+                self.llm.chat, SYSTEM_PROMPT, repair_prompt
+            )
+            repaired_code = _extract_code(repaired_response)
+            if _is_valid_full_python_file(repaired_code):
+                repaired_issues = validate_candidate_code(repaired_code, current_code)
+                if not repaired_issues:
+                    return repaired_code, repaired_response
+            return None, repaired_response
 
         if code:
             console.print(
@@ -292,6 +333,12 @@ class ExperimentLoop:
         )
         repaired_code = _extract_code(repaired_response)
         if _is_valid_full_python_file(repaired_code):
+            repaired_issues = validate_candidate_code(repaired_code, current_code)
+            if repaired_issues:
+                console.print(
+                    "[yellow]Corrected file still violated local runtime policy, skipping.[/]"
+                )
+                return None, repaired_response
             return repaired_code, repaired_response
         return None, repaired_response
 

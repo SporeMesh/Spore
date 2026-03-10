@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import Callable
 
+from .profile import NodeProfile
 from .record import ExperimentRecord
 from .wire import MessageType, encode_message, read_message
 
@@ -32,6 +33,7 @@ class GossipServer:
         on_challenge_response: Callable[[dict], None] | None = None,
         on_dispute: Callable[[dict], None] | None = None,
         on_verification: Callable[[dict], None] | None = None,
+        on_profile: Callable[[NodeProfile], None] | None = None,
         on_code_request: Callable[[str], bytes | None] | None = None,
     ):
         self.host = host
@@ -43,6 +45,7 @@ class GossipServer:
         self.on_challenge_response = on_challenge_response
         self.on_dispute = on_dispute
         self.on_verification = on_verification
+        self.on_profile = on_profile
         self.on_code_request = on_code_request
         self._experiment_accepts_addr = False
         if self.on_experiment is not None:
@@ -133,6 +136,10 @@ class GossipServer:
     async def broadcast_verification(self, payload: dict):
         """Broadcast a successful verification event to all peers."""
         await self._broadcast(MessageType.VERIFICATION, payload)
+
+    async def broadcast_profile(self, profile: NodeProfile):
+        """Broadcast a signed node profile to all connected peers."""
+        await self._broadcast(MessageType.PROFILE, profile.to_dict())
 
     async def _broadcast(self, msg_type: str, payload: dict):
         """Broadcast a message to all connected peers."""
@@ -295,6 +302,20 @@ class GossipServer:
                 return
             if self.on_verification:
                 self.on_verification(payload)
+            await self._regossip_control(msg_type, payload, exclude=addr)
+
+        elif msg_type == MessageType.PROFILE:
+            if not self._mark_seen_event(msg_type, payload):
+                return
+            profile = NodeProfile.from_json(payload)
+            if not profile.verify_id():
+                log.warning("Invalid profile id from %s, dropping", addr)
+                return
+            if not profile.verify_signature():
+                log.warning("Invalid profile signature from %s, dropping", addr)
+                return
+            if self.on_profile:
+                self.on_profile(profile)
             await self._regossip_control(msg_type, payload, exclude=addr)
 
         elif msg_type == MessageType.CODE_REQUEST:

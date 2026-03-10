@@ -42,6 +42,10 @@ export async function getNodeReputation(nodeId) {
   return fetchJson(`/api/node/${nodeId}/reputation`);
 }
 
+export async function getNodeProfile(nodeId) {
+  return fetchJson(`/api/node/${nodeId}/profile`);
+}
+
 export async function searchExperiment(query) {
   if (!query || query.length < 2) return [];
   return fetchJson(`/api/search?q=${encodeURIComponent(query)}`);

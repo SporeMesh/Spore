@@ -1,255 +1,517 @@
 # Spore Protocol Specification
 
-> Version 0.1 — March 2026
-
----
+> Current protocol and runtime semantics for the repository implementation.
 
 ## 1. Overview
 
-Spore is a peer-to-peer protocol for collaborative AI research. Nodes run autonomous ML experiments, publish results as immutable records, and collectively build a directed acyclic graph (DAG) of research findings.
+Spore is a peer-to-peer protocol for collaborative AI research.
 
-Unlike distributed training systems (Petals, Hivemind, Prime Intellect), Spore distributes **research** — independent experiments that build on each other. The atomic unit is a 5-minute experiment, not a gradient update.
+Nodes:
 
-## 2. Experiment Record
+- run autonomous ML experiments
+- publish immutable signed records
+- exchange those records over gossip
+- fetch exact code artifacts by content hash
+- rerun compatible experiments to verify claims
+- track node reputation through propagated events
 
-The protocol's atom. See `spore/record.py` for implementation.
+Spore distributes research, not distributed training. The atomic unit is a short experiment that can be rerun.
 
-### 2.1 Fields
+## 2. Identity Model
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | CID: SHA-256 of canonical payload |
-| `version` | int | Protocol version (1) |
-| `parent` | string? | Parent experiment CID |
+Each node has an Ed25519 keypair.
+
+- private key: local only
+- public key: `node_id`
+
+The `node_id` is the consensus identity for:
+
+- experiment publishing
+- profile signing
+- challenge participation
+- verification credit
+- dispute outcomes
+- reputation accounting
+
+## 3. Experiment Record
+
+The experiment record is the protocol atom.
+
+Implementation: [`spore/record.py`](../spore/record.py)
+
+### 3.1 Fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | SHA-256 CID of the canonical payload |
+| `version` | int | Record version |
+| `parent` | string or null | Parent experiment CID |
 | `depth` | int | Distance from genesis |
-| `code_cid` | string | SHA-256 of train.py snapshot |
+| `code_cid` | string | SHA-256 of the full `train.py` snapshot |
 | `diff` | string | Unified diff from parent |
-| `dataset_cid` | string | Hash of dataset |
-| `prepare_cid` | string | Hash of evaluation harness |
-| `time_budget` | int | Training time in seconds |
-| `val_bpb` | float | Validation bits per byte |
-| `peak_vram_mb` | float | Peak GPU memory |
-| `num_steps` | int | Training steps completed |
-| `num_params` | int | Model parameter count |
-| `status` | enum | keep / discard / crash |
-| `description` | string | What was tried |
-| `hypothesis` | string | Agent's reasoning |
-| `agent_model` | string | LLM that proposed this |
-| `gpu_model` | string | GPU identifier |
+| `dataset_cid` | string | Dataset identifier |
+| `prepare_cid` | string | Evaluation harness identifier |
+| `time_budget` | int | Intended training time in seconds |
+| `val_bpb` | float | Validation bits-per-byte |
+| `peak_vram_mb` | float | Peak memory during run |
+| `num_steps` | int | Completed training steps |
+| `num_params` | int | Parameter count |
+| `status` | enum | `keep`, `discard`, or `crash` |
+| `description` | string | Human-readable summary |
+| `hypothesis` | string | Why the agent expected improvement |
+| `agent_model` | string | LLM identifier |
+| `gpu_model` | string | Normalized hardware string |
 | `cuda_version` | string | CUDA/driver version |
 | `torch_version` | string | PyTorch version |
-| `node_id` | string | Ed25519 public key (hex) |
+| `node_id` | string | Publisher identity |
 | `timestamp` | int | Unix timestamp |
-| `signature` | string | Ed25519 signature (hex) |
+| `signature` | string | Ed25519 signature of canonical bytes |
 
-### 2.2 CID Computation
+### 3.2 Canonical Payload
 
-1. Serialize all fields except `id` and `signature` as canonical JSON (sorted keys, no whitespace, ASCII-only)
-2. SHA-256 hash the JSON bytes
-3. Hex-encode the hash → this is the CID
+The canonical payload is the record with:
 
-### 2.3 Signing
+- `id` removed
+- `signature` removed
+- enum fields serialized as plain values
 
-1. Compute canonical JSON bytes (same as CID input)
-2. Sign with node's Ed25519 private key
-3. Store hex-encoded signature in `signature` field
+Canonical bytes are deterministic JSON:
 
-### 2.4 Verification
+- sorted keys
+- no insignificant whitespace
+- ASCII-safe encoding
 
-A record is valid if:
-- `id` matches recomputed CID
-- `signature` verifies against `node_id` public key
-- `parent` exists in the graph (or is null for genesis)
-- `status` is one of: keep, discard, crash
-- `val_bpb > 0` (or 0 for crashes)
+### 3.3 CID
 
-## 3. Research Graph
+The CID is:
 
-### 3.1 Structure
+1. canonical bytes
+2. SHA-256
+3. lowercase hex
 
-A Merkle-DAG where each experiment points to its parent via the `parent` field. The graph is:
+### 3.4 Signature
 
-- **Append-only**: Records are never deleted or modified
-- **Content-addressed**: Each record's CID depends on its content
-- **Convergent**: Two nodes exchanging records converge without coordination (grow-only CRDT)
+The signature is Ed25519 over the same canonical bytes used for CID generation.
 
-### 3.2 Frontier
+### 3.5 Validity Conditions
 
-The frontier is the set of unbeaten experiments — experiments whose status is `keep` and no child has a lower `val_bpb`. Computed locally:
+A record is accepted if:
 
-```sql
-SELECT e.* FROM experiment e
-WHERE e.status = 'keep'
-AND NOT EXISTS (
-    SELECT 1 FROM experiment c
-    WHERE c.parent = e.id
-    AND c.status = 'keep'
-    AND c.val_bpb < e.val_bpb
-)
-ORDER BY e.val_bpb ASC
+- recomputed CID equals `id`
+- signature verifies against `node_id`
+- `status` is valid
+- the record inserts cleanly into the local graph
+
+The implementation does not require the parent to be present before a record is received, but meaningful lineage depends on eventually having the parent.
+
+## 4. Node Profile Record
+
+Node profiles are signed metadata records, separate from the experiment DAG.
+
+Implementation: [`spore/profile.py`](../spore/profile.py)
+
+### 4.1 Purpose
+
+Profiles are for UI and attribution, not consensus.
+
+They allow explorers to show:
+
+- display names
+- bios
+- websites
+- avatar URLs
+- donation addresses
+
+### 4.2 Fields
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | SHA-256 of canonical profile payload |
+| `node_id` | string | Signing identity |
+| `display_name` | string | Human-facing label |
+| `bio` | string | Short description |
+| `website` | string | Optional URL |
+| `avatar_url` | string | Optional image URL |
+| `donation_address` | string | Optional donation or payout metadata |
+| `timestamp` | int | Last update time |
+| `signature` | string | Ed25519 signature |
+| `schema_version` | int | Profile schema version |
+
+### 4.3 Storage Model
+
+- latest profile per `node_id`
+- separate SQLite store from graph and reputation
+- timestamp-based replacement
+
+### 4.4 Sync Model
+
+Profiles are currently live-gossiped and cached opportunistically.
+
+They are not yet part of historical DAG sync.
+
+## 5. Research Graph
+
+Implementation: [`spore/graph.py`](../spore/graph.py)
+
+The graph is:
+
+- append-only
+- content-addressed
+- locally materialized in SQLite
+
+Each experiment points to its parent CID. The graph acts like a grow-only research history.
+
+### 5.1 Frontier
+
+The frontier is the set of unbeaten `keep` experiments:
+
+- status is `keep`
+- no child `keep` has a strictly lower `val_bpb`
+
+It is computed locally.
+
+### 5.2 Verification Classes
+
+Val_bpb is not globally comparable across arbitrary hardware.
+
+Spore therefore normalizes raw device strings into verification classes.
+
+Examples:
+
+- `RTX_3060`
+- `RTX_4090`
+- `RTX_5090`
+- `A100`
+- `H100`
+- `APPLE_MPS`
+- `CPU`
+
+Verification compares only within a compatible class.
+
+## 6. Artifact Model
+
+Implementation: [`spore/store.py`](../spore/store.py), [`spore/artifact_sync.py`](../spore/artifact_sync.py)
+
+The exact `train.py` snapshot for an experiment is an artifact addressed by `code_cid`.
+
+Artifact rules:
+
+- content-addressed by SHA-256
+- immutable once stored
+- fetched by CID
+- verified after transfer by hashing the received bytes
+
+Artifact availability is required for:
+
+- frontier application
+- spot-checking
+- challenge verification
+
+## 7. Wire Protocol
+
+Implementation: [`spore/wire.py`](../spore/wire.py), [`spore/gossip.py`](../spore/gossip.py)
+
+### 7.1 Envelope
+
+Messages are length-prefixed JSON over TCP:
+
+```text
+[4-byte big-endian length][UTF-8 JSON body]
 ```
 
-### 3.3 GPU-Class Frontier
+The JSON envelope is:
 
-Different GPU classes process different token counts in the fixed time budget, making val_bpb incomparable across classes. Each GPU class has its own frontier.
-
-## 4. Wire Protocol
-
-### 4.1 Message Format
-
-Length-prefixed JSON over TCP:
-```
-[4 bytes: big-endian uint32 length][UTF-8 JSON body]
+```json
+{
+  "type": "<message_type>",
+  "payload": { ... }
+}
 ```
 
-### 4.2 Message Types
+### 7.2 Message Types
 
-| Type | Payload | Direction |
-|------|---------|-----------|
-| `experiment` | Full ExperimentRecord | Broadcast |
-| `sync_request` | `{since: timestamp}` | Request |
-| `sync_response` | `[ExperimentRecord, ...]` | Response |
-| `pex_request` | `{}` | Request |
-| `pex_response` | `{peer: ["host:port", ...]}` | Response |
-| `challenge` | `{experiment_id, challenger_id, challenger_bpb, challenger_gpu}` | Broadcast |
-| `challenge_response` | `{experiment_id, challenger_id, verifier_id, verifier_bpb, verifier_gpu}` | Broadcast |
-| `dispute` | `{experiment_id, challenger_id, challenger_bpb, outcome, ground_truth_bpb, verifier_count}` | Broadcast |
-| `code_request` | `{code_cid}` | Request |
-| `code_response` | `{code_cid, code}` | Response |
-| `ping` | `{}` | Request |
-| `pong` | `{}` | Response |
+| Type | Payload |
+|---|---|
+| `experiment` | full experiment record |
+| `sync_request` | `{since}` |
+| `pex_request` | `{}` |
+| `pex_response` | `{peer: ["host:port", ...]}` |
+| `challenge` | challenge event payload |
+| `challenge_response` | verifier response payload |
+| `dispute` | resolved dispute payload |
+| `verification` | successful spot-check payload |
+| `profile` | full node profile record |
+| `code_request` | `{code_cid}` |
+| `code_response` | `{code_cid, code}` with base64 payload |
+| `ping` | `{}` |
+| `pong` | `{}` |
 
-### 4.3 Gossip
+### 7.3 Experiment Gossip
 
-When a node produces or receives a new experiment:
-1. Validate record (CID, signature)
-2. Check CID against local seen-set (dedup)
-3. Insert into local graph
-4. Re-broadcast to all connected peers except source
+On receipt of an `experiment`:
 
-### 4.4 Sync
+1. parse the record
+2. verify CID
+3. verify signature
+4. drop if already seen
+5. insert into local graph
+6. update local publish counts
+7. optionally prefetch the artifact
+8. optionally trigger local spot-check logic
+9. regossip to peers except the source
 
-When a node joins or reconnects:
-1. Send `sync_request` with `since` = timestamp of latest local experiment
-2. Peer responds with all experiments after that timestamp
-3. Node validates and inserts each record
-4. Node identifies the best frontier experiment and sends `code_request` with its `code_cid`
-5. Peer looks up the full code snapshot in its artifact store and responds with `code_response` (base64-encoded)
-6. Node verifies the SHA-256 of received code matches the requested CID, caches it locally, and applies it as `train.py`
+### 7.4 Control-Plane Gossip
 
-This allows joining nodes to start improving the best known code immediately, without running a redundant baseline.
+Challenge, challenge-response, dispute, verification, and profile messages all use:
 
-### 4.5 Peer Exchange (PEX)
+- message-type plus `event_id` dedupe
+- fan-out rebroadcast to peers except the source
 
-After connecting to a peer, a node requests its peer list:
-1. Send `pex_request`
-2. Peer responds with `pex_response` containing all its connected peer addresses (excluding the requester)
-3. Node auto-connects to discovered peers and persists them to `~/.spore/known_peer`
+This allows reputation-relevant state to converge even when nodes are not directly connected to the original sender.
 
-This allows the network to grow organically — connecting to one peer discovers the rest.
+### 7.5 Peer Exchange
 
-### 4.6 Peer Discovery
+After connecting, nodes can request peer lists and connect onward.
 
-Nodes discover the network via:
-1. **Bootstrap peer**: `188.36.196.221:42208` (used when no peers are configured)
-2. **Persisted known peer**: `~/.spore/known_peer` (peers from previous sessions)
-3. **PEX**: peer lists received from connected peers
-4. **Manual config**: `spore connect <host:port>` or `--peer` flag
+Discovered peers are persisted in `known_peer`.
 
-NAT'd nodes (e.g., laptops behind a router) can connect outbound to public peers and participate fully. They receive all gossip through their outbound connections. Port forwarding is only needed to accept inbound connections from other peers.
+### 7.6 Sync
 
-## 5. Autonomous Experiment Loop
+The current sync path exchanges experiments by timestamp:
 
-Each research node runs a continuous loop:
+1. send `sync_request`
+2. peer replies by streaming experiment records newer than `since`
+3. receiver inserts each valid record
 
-1. **Select parent**: Pick an experiment from the frontier (best unbeaten results)
-2. **Propose**: Send the current `train.py` + parent context to a configured LLM. The LLM proposes a modification (architecture, hyperparameters, optimizer, etc.)
-3. **Run**: Apply the proposed code change and execute training (5-minute budget)
-4. **Evaluate**: Parse val_bpb from output. If lower than parent → keep, otherwise discard
-5. **Publish**: Create a signed ExperimentRecord with the result and gossip it to peers
-6. **Repeat**: Return to step 1
+Artifact and profile state are not part of the same historical sync stream today. Artifacts are pulled on demand or prefetched when experiments arrive.
 
-### 5.1 LLM Provider
+## 8. Node Lifecycle
 
-Nodes configure an LLM provider via `spore set <provider> <api_key>`. Supported providers:
-- Groq (`moonshotai/kimi-k2-instruct-0905`)
-- Anthropic (`claude-sonnet-4-5-20250929`)
-- OpenAI (`gpt-4o`)
-- xAI (`grok-3`)
-- Custom OpenAI-compatible endpoint
+Implementation: [`spore/node.py`](../spore/node.py)
 
-All providers use the OpenAI chat completions format.
+At startup a node:
 
-### 5.2 Resource Control
+1. loads or creates identity
+2. opens graph, artifact, reputation, and profile stores
+3. starts the gossip server
+4. connects to configured, known, or bootstrap peers
+5. requests peer exchange
+6. requests graph sync
+7. republishes its local profile if one exists
 
-Nodes can limit resource usage with `--resource N` (1-100, default 100). This scales the training batch size proportionally, reducing GPU memory and CPU usage.
+## 9. Autonomous Experiment Loop
 
-## 6. Verification
+Implementation: [`spore/loop.py`](../spore/loop.py)
 
-### 6.1 Tolerance Band
+The research loop is:
 
-Same code on same GPU class produces val_bpb within a tolerance band due to floating-point non-determinism. Empirically calibrated per GPU class.
+1. wait for peer sync
+2. if the graph is empty, run a baseline
+3. otherwise fetch and apply frontier code
+4. ask the LLM for a complete replacement `train.py`
+5. extract and validate candidate code
+6. run training
+7. publish the result and code snapshot
+8. keep local code if it improved, otherwise revert
 
-Expected: ±0.002 val_bpb within same GPU family.
+### 9.1 Proposal Validation
 
-### 6.2 Spot-Checking
+Candidate code must pass both:
 
-Nodes probabilistically spot-check incoming experiments:
-- Base rate: 5% of all experiments
-- 3x rate for nodes with negative reputation
-- 2x rate for nodes with reputation < 5
-- 2x rate for suspiciously low val_bpb (< 0.9)
+- structural checks
+- local runtime policy checks
 
-When spot-checking, the node retrieves the full code snapshot from the artifact store, re-runs training, and compares the result against the claimed val_bpb.
+The current local policy rejects proposals that:
 
-### 6.3 Challenge Protocol
+- are diff-like or partial files
+- fail Python parsing
+- use known-broken identifiers like `MAX_SEQ_SIZE`
+- add forbidden runtime behaviors
+- add new `torch.compile` call sites
+- exceed constrained-hardware model-size envelopes
 
-1. Spot-checker re-runs the experiment on compatible hardware (same GPU class)
-2. If result exceeds tolerance band, broadcasts `CHALLENGE` message
-3. Up to 3 verifiers with matching GPU class volunteer and re-run
-4. Verifiers broadcast `CHALLENGE_RESPONSE` with their val_bpb
-5. Challenger collects responses (10-minute timeout)
-6. Median of all results (original + challenger + verifiers) = ground truth
-7. If original exceeds tolerance from ground truth → `REJECTED`, original loses reputation
-8. Otherwise → `UPHELD`, challenger loses reputation
-9. Challenger broadcasts final `DISPUTE` with outcome
+This is a local safety layer and is intentionally stricter on smaller devices.
 
-### 6.4 Sybil Defense
+## 10. Runtime Control
 
-- Hardware attestation (throughput must match claimed GPU)
-- Statistical anomaly detection
-- Reputation-gated frontier influence
+### 10.1 Compile Policy
 
-## 7. Reputation
+Implementation: [`spore/compile_policy.py`](../spore/compile_policy.py)
 
-### 7.1 Score
+Small CUDA cards default to compile-disabled mode through environment overrides.
 
-Float in [-100, +100], starting at 0.
+### 10.2 Resource Scaling
+
+The bundled workspace can scale `DEVICE_BATCH_SIZE` using `SPORE_RESOURCE`, snapping to a valid divisor for the training constants.
+
+This protects the packaged workspace, but published frontier code is still experiment content and may encode older assumptions.
+
+### 10.3 Serialized Training Runtime
+
+Implementation: [`spore/training_runtime.py`](../spore/training_runtime.py)
+
+One node does not run overlapping local training workloads.
+
+Both:
+
+- local research runs
+- isolated verification reruns
+
+share one runtime lock.
+
+### 10.4 Isolated Verification Workspace
+
+Verification reruns operate in a temporary copied workspace so they do not mutate the active local research checkout.
+
+## 11. Verification
+
+Implementation: [`spore/verify.py`](../spore/verify.py)
+
+### 11.1 Spot-Check Selection
+
+Nodes decide probabilistically whether to verify an incoming experiment.
+
+Selection pressure increases for:
+
+- negative or weak reputation
+- suspiciously low claimed `val_bpb`
+
+Crash records are skipped.
+
+### 11.2 Tolerance
+
+Verification uses a class-specific tolerance map keyed by normalized GPU class.
+
+Cross-class reruns do not provide authoritative comparison.
+
+### 11.3 Successful Verification
+
+If a rerun is within tolerance:
+
+- the experiment is marked verified
+- the publisher gains verification credit
+- the verifier gains credit for performing the rerun
+- a `verification` event is broadcast
+
+## 12. Challenge Protocol
+
+Implementation: [`spore/challenge.py`](../spore/challenge.py), [`spore/challenge_state.py`](../spore/challenge_state.py)
+
+### 12.1 Challenge Trigger
+
+A challenge is opened when:
+
+- a same-class spot-check rerun succeeds
+- the result lies outside the tolerance band
+- at least one independent compatible verifier is visible in the graph
+
+### 12.2 Independent Verifier Rules
+
+Independent verifiers exclude:
+
+- the challenger
+- the original publisher
+
+Only same-class peers count.
+
+### 12.3 Verifier Count
+
+The protocol target is 3 verifier responses, but the required count is reduced to the number of independent compatible peers actually available.
+
+### 12.4 Response Window
+
+The challenge wait period defaults to 30 minutes.
+
+Environment override:
+
+```text
+SPORE_CHALLENGE_TIMEOUT
+```
+
+### 12.5 Resolution
+
+Resolution uses the median of:
+
+- original claimed result
+- challenger rerun
+- verifier reruns
+
+Outcomes:
+
+- `upheld`: original claim remains valid
+- `rejected`: original claim loses
+
+### 12.6 Event Application
+
+Dispute and verification effects are applied through shared event handlers so they can be processed exactly once across the mesh.
+
+## 13. Reputation
+
+Implementation: [`spore/reputation.py`](../spore/reputation.py)
+
+Reputation is stored in a separate SQLite database.
+
+### 13.1 Stored Counters
+
+- `score`
+- `experiments_published`
+- `experiments_verified`
+- `verifications_performed`
+- `disputes_won`
+- `disputes_lost`
+
+### 13.2 Idempotence
+
+Each processed network event is recorded in `reputation_event`.
+
+If the same propagated event is seen again, it is ignored.
+
+### 13.3 Current Score Deltas
 
 | Event | Delta |
-|-------|-------|
-| Verified keep | +1.0 |
-| Verified discard | +0.3 |
-| Frontier advance | +2.0 |
-| Verification performed | +0.5 |
-| Dispute won | +1.0 |
-| Dispute lost | -5.0 |
+|---|---|
+| verified `keep` | `+1.0` |
+| verified frontier `keep` | `+2.0` |
+| verified `discard` | `+0.3` |
+| verified `crash` | `+0.1` |
+| verification performed | `+0.5` |
+| dispute won | `+1.0` |
+| dispute lost | `-5.0` |
 
-### 7.2 Effect
+Publishing increments the `experiments_published` counter but does not directly change score.
 
-- Graph sync priority
-- Verification weight
-- Rate limiting for low-reputation nodes
+## 14. Explorer Surfaces
 
-## 8. Default Port
+Implementation: [`spore/explorer/server.py`](../spore/explorer/server.py)
 
-`7470` (S-P-O-R on a phone keypad, close enough)
+The explorer exposes:
 
-## 9. Future Extension
+- graph state
+- frontier
+- experiment lookup
+- recent activity
+- node reputation
+- node profile
+- leaderboard
+- artifact lookup
 
-- libp2p transport (GossipSub, Kademlia DHT)
-- IPFS artifact storage
-- Multi-metric Pareto frontiers
-- Research directives (multiple program.md channels)
-- Cross-GPU-class insight transfer
-- Federation between Spore networks
+Explorer responses may enrich experiment or leaderboard data with profile display names.
+
+## 15. Current Limits
+
+The implementation has a few explicit limits operators should understand:
+
+- profile state is not historical-sync complete
+- same-class peer availability is required for meaningful verification
+- frontier code can lag package runtime fixes
+- val_bpb is only locally meaningful within a hardware verification class
+
+## 16. Future Work
+
+Likely future protocol extensions:
+
+- richer hardware capability fingerprints
+- explicit historical profile sync
+- stronger artifact replication
+- alternative transports such as libp2p
+- multi-metric frontier selection

@@ -324,6 +324,74 @@ def list_peer():
             console.print(f"  - [dim]{p}[/]")
 
 
+@cli.group()
+def profile():
+    """Manage signed node profile metadata."""
+    pass
+
+
+@profile.command("show")
+@click.option(
+    "--data-dir", "-d", default=None, help="Data directory (default: ~/.spore)"
+)
+def profile_show(data_dir: str | None):
+    """Show the current local node profile."""
+    data_path = Path(data_dir).expanduser() if data_dir else SPORE_DIR
+    ensure_initialized(data_path)
+    node = SporeNode(NodeConfig.load(data_path / "config.toml"))
+    current = node.get_profile(node.node_id)
+    if current is None:
+        console.print("No local profile set.")
+    else:
+        console.print(f"Node: [cyan]{node.node_id[:16]}...[/]")
+        console.print(f"Display name: {current.display_name or '—'}")
+        console.print(f"Bio: {current.bio or '—'}")
+        console.print(f"Website: {current.website or '—'}")
+        console.print(f"Avatar URL: {current.avatar_url or '—'}")
+        console.print(f"Donation address: {current.donation_address or '—'}")
+    node.graph.close()
+    node.profile.close()
+    node.reputation.close()
+
+
+@profile.command("set")
+@click.option("--display-name", required=True, help="Public display name")
+@click.option("--bio", default="", help="Short profile description")
+@click.option("--website", default="", help="Public website URL")
+@click.option("--avatar-url", default="", help="Avatar image URL")
+@click.option("--donation-address", default="", help="Optional donation address")
+@click.option(
+    "--data-dir", "-d", default=None, help="Data directory (default: ~/.spore)"
+)
+def profile_set(
+    display_name: str,
+    bio: str,
+    website: str,
+    avatar_url: str,
+    donation_address: str,
+    data_dir: str | None,
+):
+    """Set the local signed node profile."""
+    data_path = Path(data_dir).expanduser() if data_dir else SPORE_DIR
+    ensure_initialized(data_path)
+    config = NodeConfig.load(data_path / "config.toml")
+    config.data_dir = str(data_path)
+    node = SporeNode(config)
+    profile = node.update_local_profile(
+        display_name=display_name,
+        bio=bio,
+        website=website,
+        avatar_url=avatar_url,
+        donation_address=donation_address,
+    )
+    console.print(f"Saved profile for [cyan]{node.node_id[:16]}...[/]")
+    console.print(f"Display name: {profile.display_name}")
+    console.print("Profile will gossip on next `spore run` or `spore explorer`.")
+    node.graph.close()
+    node.profile.close()
+    node.reputation.close()
+
+
 @cli.command()
 @click.option("--port", "-p", default=7470, help="Gossip port")
 @click.option("--web-port", "-w", default=8470, help="Web UI port")
