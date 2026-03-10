@@ -28,6 +28,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
+from .compile_policy import compile_env_overrides
 from .record import ExperimentRecord, Status
 
 log = logging.getLogger(__name__)
@@ -64,10 +65,17 @@ class ExperimentRunner:
 
     def run_training(self, train_script: str = "train.py") -> TrainResult:
         """Run the training script with live progress display."""
+        stable_env = compile_env_overrides()
+        if stable_env and not self._compile_disabled:
+            reason = stable_env.get("SPORE_DISABLE_COMPILE_REASON", "policy")
+            log.info("Compile disabled by local policy: %s", reason)
+            self._compile_disabled = True
+
         if self._compile_disabled:
             return self._run_training_once(
                 train_script,
-                env_overrides={
+                env_overrides=stable_env
+                or {
                     "SPORE_DISABLE_COMPILE": "1",
                     "TORCHINDUCTOR_COMPILE_THREADS": "1",
                 },
@@ -292,6 +300,9 @@ class ExperimentRunner:
                 "a compilation subprocess exited unexpectedly",
                 "torchinductor_compile_threads=1",
                 'set torch_logs="+dynamo"',
+                "triton",
+                "torch.compile",
+                "backendcompilerfailed",
             )
         )
 

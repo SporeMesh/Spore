@@ -155,6 +155,42 @@ sys.exit(1)
         assert second.success
         assert "retry: compile disabled" not in second.log_output
 
+    def test_run_uses_local_compile_policy(self, tmp_path, monkeypatch):
+        """Low-end CUDA nodes should disable compile before the first run."""
+        train_script = tmp_path / "train.py"
+        train_script.write_text(
+            """
+import os
+import sys
+
+if os.environ.get("SPORE_DISABLE_COMPILE") == "1":
+    print("step 500")
+    print("num_parameters: 124,000,000")
+    print("peak_vram_mb: 12000.0")
+    print("val_bpb: 1.111111")
+    sys.exit(0)
+
+print("compile unexpectedly enabled")
+sys.exit(1)
+"""
+        )
+
+        monkeypatch.setattr(
+            "spore.runner.compile_env_overrides",
+            lambda: {
+                "SPORE_DISABLE_COMPILE": "1",
+                "TORCHINDUCTOR_COMPILE_THREADS": "1",
+                "SPORE_DISABLE_COMPILE_REASON": "cuda_sm_count_lt_48:28",
+            },
+        )
+
+        runner = ExperimentRunner(tmp_path, time_budget=10)
+        result = runner.run_training()
+
+        assert result.success
+        assert runner._compile_disabled
+        assert result.val_bpb == pytest.approx(1.111111)
+
     def test_run_missing_script(self, tmp_path):
         runner = ExperimentRunner(tmp_path, time_budget=10)
         result = runner.run_training("nonexistent.py")
