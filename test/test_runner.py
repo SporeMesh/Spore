@@ -1,5 +1,6 @@
 """Tests for ExperimentRunner — training execution and result parsing."""
 
+
 from test.conftest import make_record
 
 import pytest
@@ -160,6 +161,23 @@ sys.exit(1)
         result = runner.run_training("nonexistent.py")
         assert not result.success
         assert "not found" in result.error
+
+    def test_run_reports_signal_termination(self, tmp_path):
+        train_script = tmp_path / "train.py"
+        train_script.write_text(
+            """
+import os
+import signal
+
+os.kill(os.getpid(), signal.SIGSEGV)
+"""
+        )
+
+        runner = ExperimentRunner(tmp_path, time_budget=10)
+        result = runner.run_training()
+
+        assert not result.success
+        assert "SIGSEGV" in result.error
 
 
 class TestMakeRecord:

@@ -14,6 +14,7 @@ import hashlib
 import logging
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -232,7 +233,19 @@ class ExperimentRunner:
 
             if not parsed.success and proc.returncode != 0:
                 lines = [l for l in output.strip().splitlines() if l.strip()]
-                parsed.error = "\n".join(lines[-5:]) if lines else "Unknown error"
+                if proc.returncode < 0:
+                    sig = -proc.returncode
+                    try:
+                        sig_name = signal.Signals(sig).name
+                    except ValueError:
+                        sig_name = "UNKNOWN"
+                    tail = "\n".join(lines[-5:]) if lines else ""
+                    parsed.error = (
+                        f"Process terminated by signal {sig} ({sig_name})"
+                        + (f"\n{tail}" if tail else "")
+                    )
+                else:
+                    parsed.error = "\n".join(lines[-5:]) if lines else "Unknown error"
 
             # Print result summary
             if parsed.success:

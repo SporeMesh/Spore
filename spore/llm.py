@@ -9,6 +9,7 @@ Configure with: spore set <provider> <api_key>
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -96,7 +97,7 @@ class LLMClient:
                 {"role": "user", "content": user},
             ],
         }
-        resp = self.session.post(url, json=payload, timeout=120)
+        resp = self._post_with_retry(url, payload)
         resp.raise_for_status()
         data = resp.json()
 
@@ -124,7 +125,7 @@ class LLMClient:
             "system": system,
             "messages": [{"role": "user", "content": user}],
         }
-        resp = requests.post(url, json=payload, headers=headers, timeout=120)
+        resp = self._post_with_retry(url, payload, headers=headers, session=None)
         resp.raise_for_status()
         data = resp.json()
 
@@ -138,6 +139,33 @@ class LLMClient:
             usage.get("output_tokens", 0),
         )
         return content
+
+    def _post_with_retry(
+        self,
+        url: str,
+        payload: dict,
+        *,
+        headers: dict | None = None,
+        session: requests.Session | None = None,
+        timeout: int = 120,
+        max_attempts: int = 3,
+    ):
+        client = session or self.session
+        delay = 1.0
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return client.post(url, json=payload, headers=headers, timeout=timeout)
+            except requests.exceptions.RequestException as exc:
+                if attempt >= max_attempts:
+                    raise
+                log.warning(
+                    "LLM request failed (%s/%s): %s",
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                time.sleep(delay)
+                delay *= 2
 
 
 # ---------------------------------------------------------------------------

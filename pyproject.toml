@@ -1,6 +1,6 @@
 [project]
 name = "sporemesh"
-version = "0.2.11"
+version = "0.2.12"
 description = "Decentralized AI research protocol — BitTorrent for ML experiments"
 readme = "README.md"
 requires-python = ">=3.11"
