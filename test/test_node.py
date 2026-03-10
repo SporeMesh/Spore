@@ -89,9 +89,9 @@ async def test_start_requests_pex_before_sync(tmp_path, monkeypatch):
     await node.start()
 
     assert calls == [
-        ("connect", "188.36.196.221:42208"),
-        ("pex", "188.36.196.221:42208"),
-        ("sync", "188.36.196.221:42208"),
+        ("connect", "peer.sporemesh.com:7470"),
+        ("pex", "peer.sporemesh.com:7470"),
+        ("sync", "peer.sporemesh.com:7470"),
     ]
 
     node.graph.close()
