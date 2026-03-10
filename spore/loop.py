@@ -15,6 +15,7 @@ import difflib
 import hashlib
 import logging
 import re
+import time
 from pathlib import Path
 
 from rich.console import Console
@@ -27,6 +28,7 @@ from .runner import ExperimentRunner
 
 log = logging.getLogger(__name__)
 console = Console()
+FRONTIER_FETCH_TIMEOUT = 150.0
 
 SYSTEM_PROMPT = """\
 You are an autonomous ML researcher optimizing a language model pretraining script.
@@ -118,7 +120,20 @@ class ExperimentLoop:
         code_bytes = self.node.store.get(best.code_cid)
         if code_bytes is None:
             console.print("[dim]Requesting frontier code from peers...[/]")
-            code_bytes = await self.node.fetch_code(best.code_cid)
+            deadline = time.monotonic() + FRONTIER_FETCH_TIMEOUT
+            last_peer_count = -1
+            while code_bytes is None and time.monotonic() < deadline:
+                code_bytes = await self.node.fetch_code(best.code_cid)
+                if code_bytes is not None:
+                    break
+
+                peer_count = len(self.node.gossip.peers)
+                if peer_count != last_peer_count:
+                    console.print(
+                        f"[dim]Waiting for artifact peer discovery... peers={peer_count}[/]"
+                    )
+                    last_peer_count = peer_count
+                await asyncio.sleep(2.0)
 
         if code_bytes is None:
             console.print("[yellow]Could not obtain frontier code[/]")
