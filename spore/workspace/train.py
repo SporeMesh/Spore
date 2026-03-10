@@ -8,6 +8,9 @@ import os
 
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+# Avoid Inductor worker subprocess crashes on marginal CUDA setups unless
+# the environment explicitly overrides this before launch.
+os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
 
 import gc
 import time
@@ -36,10 +39,6 @@ _USE_CUDA = _DEVICE.type == "cuda"
 _USE_COMPILE = _USE_CUDA and not _env_flag("SPORE_DISABLE_COMPILE")
 _USE_MODEL_COMPILE = _USE_COMPILE and not _env_flag("SPORE_DISABLE_MODEL_COMPILE")
 _USE_OPTIMIZER_COMPILE = _USE_COMPILE and _env_flag("SPORE_ENABLE_OPTIMIZER_COMPILE")
-
-if _USE_COMPILE:
-    # Inductor compile workers are a common crash point on smaller CUDA boxes.
-    os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
 
 # Attention backend: FA3 on Hopper, PyTorch SDPA elsewhere
 fa3 = None

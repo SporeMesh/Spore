@@ -59,9 +59,19 @@ class ExperimentRunner:
         self.workspace = Path(workspace)
         self.time_budget = time_budget
         self.python_cmd = python_cmd or sys.executable
+        self._compile_disabled = False
 
     def run_training(self, train_script: str = "train.py") -> TrainResult:
         """Run the training script with live progress display."""
+        if self._compile_disabled:
+            return self._run_training_once(
+                train_script,
+                env_overrides={
+                    "SPORE_DISABLE_COMPILE": "1",
+                    "TORCHINDUCTOR_COMPILE_THREADS": "1",
+                },
+            )
+
         result = self._run_training_once(train_script)
         if result.success or not self._looks_like_compile_crash(result):
             return result
@@ -69,6 +79,7 @@ class ExperimentRunner:
         console.print(
             "[yellow]Compile crash detected, retrying with compile disabled.[/]"
         )
+        self._compile_disabled = True
         retry_result = self._run_training_once(
             train_script,
             env_overrides={
