@@ -41,6 +41,32 @@
   <button class="filter-btn" data-filter="crash">crash</button>
 </div>
 
+<div class="overview-grid">
+  <section class="overview-card pulse-card">
+    <div class="overview-head">
+      <h2>Network pulse</h2>
+      <div class="overview-meta" id="pulse-window-label">last 6h</div>
+    </div>
+    <div class="pulse-metrics" id="pulse-metrics"></div>
+  </section>
+
+  <section class="overview-card">
+    <div class="overview-head">
+      <h2>Hot tasks</h2>
+      <div class="overview-meta" id="hot-task-label">where the mesh is moving</div>
+    </div>
+    <div class="story-list" id="hot-task-list"></div>
+  </section>
+
+  <section class="overview-card">
+    <div class="overview-head">
+      <h2>Live stories</h2>
+      <div class="overview-meta">micro-updates worth opening</div>
+    </div>
+    <div class="story-list" id="story-feed"></div>
+  </section>
+</div>
+
 <div class="main">
   <div class="dag-panel" id="dag-panel">
     <div class="empty-state" id="dag-empty">
@@ -51,10 +77,10 @@
   <div class="detail-panel" id="detail-panel">
     <div class="detail-header">
       <h2 id="detail-title">Detail</h2>
-      <div class="detail-subtitle" id="detail-subtitle">Choose an experiment or node</div>
+      <div class="detail-subtitle" id="detail-subtitle">Choose a task, experiment, or node</div>
     </div>
     <div class="detail-body">
-      <div class="detail-empty" id="detail-empty">Click an experiment, open a node, or press <b>/</b> to search</div>
+      <div class="detail-empty" id="detail-empty">Click a task, open an experiment, inspect a node, or press <b>/</b> to search</div>
       <div id="detail-content" style="display:none"></div>
     </div>
   </div>

@@ -5,14 +5,18 @@ import {
   formatParam,
   getArtifact,
   getAncestor,
+  getFeed,
   getChildren,
   getExperiment,
   getFrontier,
   getGraph,
+  getHotTasks,
   getNodeDetail,
   getNodes,
+  getPulse,
   getStat,
   getTask,
+  getTaskFeed,
   getTasks,
   searchExperiment,
   searchNodes,
@@ -29,9 +33,13 @@ const state = {
   selectedTaskId: '',
   selectedExperimentId: null,
   selectedNodeId: null,
+  selectedTaskDetailId: null,
   detailMode: 'empty',
   statusFilter: 'all',
   searchTimeout: null,
+  pulse: null,
+  storyFeed: [],
+  hotTasks: [],
   nodeFilters: {
     activity: 'all',
     status: 'all',
@@ -111,6 +119,66 @@ function taskParams(extra = {}) {
   return state.selectedTaskId ? { task_id: state.selectedTaskId, ...extra } : extra;
 }
 
+function formatDurationCompact(seconds) {
+  if (!seconds) return '0m';
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(seconds >= 36000 ? 0 : 1)}h`;
+  if (seconds >= 60) return `${Math.round(seconds / 60)}m`;
+  return `${seconds}s`;
+}
+
+function formatSignedDelta(delta) {
+  if (delta == null) return 'baseline';
+  if (delta === 0) return 'flat';
+  return `${delta > 0 ? '+' : ''}${delta.toFixed(6)}`;
+}
+
+function absoluteUrl(path) {
+  return new URL(path, window.location.origin).toString();
+}
+
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (_) {
+    // Ignore clipboard failures in unsupported contexts.
+  }
+}
+
+function updateUrlState() {
+  const params = new URLSearchParams(window.location.search);
+  if (state.selectedTaskId) params.set('task', state.selectedTaskId);
+  else params.delete('task');
+
+  if (state.selectedExperimentId) params.set('experiment', state.selectedExperimentId);
+  else params.delete('experiment');
+
+  if (state.selectedNodeId) params.set('node', state.selectedNodeId);
+  else params.delete('node');
+
+  const query = params.toString();
+  const next = query ? `${window.location.pathname}?${query}` : window.location.pathname;
+  window.history.replaceState({}, '', next);
+}
+
+function renderShareActions(path, label = 'share link') {
+  const url = absoluteUrl(path);
+  return `
+    <div class="profile-links">
+      <button class="inline-link" onclick='window.__copyLink(${JSON.stringify(url)})'>${escHtml(label)}</button>
+      <span class="muted-cid">${escHtml(url.replace(window.location.origin, ''))}</span>
+    </div>
+  `;
+}
+
+function buildSharePath(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) search.set(key, value);
+  });
+  const query = search.toString();
+  return query ? `/?${query}` : '/';
+}
+
 function renderNodeName(summary, opts = {}) {
   const display = summary.display_name || shortCid(summary.node_id);
   const subtitle = opts.hideSubtitle ? '' : `<div class="muted-cid">${shortCid(summary.node_id)}</div>`;
@@ -139,11 +207,13 @@ function showDetail(html) {
 function clearDetail() {
   state.selectedExperimentId = null;
   state.selectedNodeId = null;
+  state.selectedTaskDetailId = null;
   state.detailMode = 'empty';
-  setDetailHeader('Detail', 'Choose an experiment or node');
+  setDetailHeader('Detail', 'Choose a task, experiment, or node');
   detailContent.style.display = 'none';
   detailEmpty.style.display = 'block';
   resetHighlight();
+  updateUrlState();
 }
 
 function getFilteredGraph() {
@@ -270,6 +340,113 @@ function renderTaskSelect() {
   taskSelect.value = state.selectedTaskId;
 }
 
+function renderStoryCard(event, compact = false) {
+  const record = event.record;
+  const metric = record?.val_bpb != null ? record.val_bpb.toFixed(6) : '—';
+  const delta = formatSignedDelta(event.delta_bpb);
+  return `
+    <div class="story-card ${compact ? 'compact' : ''}">
+      <div class="story-top">
+        <span class="status-badge ${record?.status || 'keep'}">${escHtml(event.kind.replace('_', ' '))}</span>
+        <span class="story-time">${timeAgo(event.timestamp)}</span>
+      </div>
+      <button class="story-headline" onclick="window.__select('${record?.id || ''}')">${escHtml(event.headline)}</button>
+      <div class="story-summary">${escHtml(event.summary)}</div>
+      <div class="story-meta">
+        <button class="inline-link" onclick="window.__selectTask('${event.task_id}')">${escHtml(event.task_name)}</button>
+        <span>${metric}</span>
+        <span>${escHtml(delta)}</span>
+        <button class="inline-link" onclick="window.__selectNode('${event.node_id}')">${escHtml(event.node_display_name)}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPulse(pulse) {
+  const el = document.getElementById('pulse-metrics');
+  const label = document.getElementById('pulse-window-label');
+  label.textContent = `last ${formatDurationCompact(pulse.window_seconds)}`;
+  el.innerHTML = `
+    <div class="pulse-stat">
+      <span class="label">Runs</span>
+      <span class="value">${pulse.experiment_count_recent}</span>
+    </div>
+    <div class="pulse-stat">
+      <span class="label">Compute</span>
+      <span class="value">${formatDurationCompact(pulse.compute_seconds_recent)}</span>
+    </div>
+    <div class="pulse-stat">
+      <span class="label">Keeps</span>
+      <span class="value">${pulse.keep_count_recent}</span>
+    </div>
+    <div class="pulse-stat">
+      <span class="label">Frontier moves</span>
+      <span class="value">${pulse.frontier_move_count_recent}</span>
+    </div>
+    <div class="pulse-stat">
+      <span class="label">Active nodes</span>
+      <span class="value">${pulse.active_node_count_recent}</span>
+    </div>
+    <div class="pulse-stat">
+      <span class="label">Tasks touched</span>
+      <span class="value">${pulse.active_task_count_recent}</span>
+    </div>
+  `;
+}
+
+function renderHotTaskList(tasks) {
+  const el = document.getElementById('hot-task-list');
+  if (!tasks.length) {
+    el.innerHTML = '<div class="empty-panel">No task momentum yet.</div>';
+    return;
+  }
+  el.innerHTML = tasks.map(task => `
+    <div class="story-card task-card">
+      <div class="story-top">
+        <span class="mini-pill frontier">${escHtml(task.task_type || 'task')}</span>
+        <span class="story-time">${timeAgo(task.latest_activity)}</span>
+      </div>
+      <button class="story-headline" onclick="window.__selectTask('${task.task_id}')">${escHtml(task.name)}</button>
+      <div class="story-summary">${escHtml(task.description || 'Task room')}</div>
+      <div class="story-meta">
+        <span>${task.recent_experiment_count} runs</span>
+        <span>${task.recent_keep_count} keeps</span>
+        <span>${task.participant_count} operators</span>
+        <span>${task.best_val_bpb != null ? task.best_val_bpb.toFixed(6) : '—'}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderStoryFeed(events) {
+  const targets = [
+    document.getElementById('story-feed'),
+    document.getElementById('activity-feed'),
+  ];
+  targets.forEach(target => {
+    if (!target) return;
+    if (!events.length) {
+      target.innerHTML = '<div class="empty-panel">No recent stories yet.</div>';
+      return;
+    }
+    target.innerHTML = events.map(event => renderStoryCard(event, target.id === 'activity-feed')).join('');
+  });
+}
+
+async function refreshPulse() {
+  const [pulse, stories, hot] = await Promise.all([
+    getPulse(taskParams({ limit: 6 })),
+    getFeed(taskParams({ limit: 10 })),
+    getHotTasks({ limit: 6 }),
+  ]);
+  state.pulse = pulse;
+  state.storyFeed = stories;
+  state.hotTasks = pulse.hot_tasks?.length ? pulse.hot_tasks : hot;
+  renderPulse(pulse);
+  renderHotTaskList(state.hotTasks);
+  renderStoryFeed(stories);
+}
+
 async function refreshTasks() {
   state.tasks = await getTasks();
   if (!state.selectedTaskId && state.tasks.length) {
@@ -282,12 +459,8 @@ async function refreshTasks() {
   state.tasks.forEach(task => {
     const tr = document.createElement('tr');
     tr.className = 'clickable';
-    tr.onclick = () => {
-      state.selectedTaskId = task.task_id;
-      renderTaskSelect();
-      clearDetail();
-      refreshAll();
-    };
+    if (task.task_id === state.selectedTaskId) tr.classList.add('row-selected');
+    tr.onclick = () => selectTask(task.task_id);
     tr.innerHTML = `
       <td>${escHtml(task.name)}<div class="muted-cid">${shortCid(task.task_id)}</div></td>
       <td>${escHtml(task.task_type || task.source)}</td>
@@ -414,10 +587,96 @@ function bindNodeDetailControls(nodeId) {
   }
 }
 
+async function selectTask(taskId) {
+  state.selectedTaskId = taskId || '';
+  state.selectedTaskDetailId = taskId || '';
+  state.selectedExperimentId = null;
+  state.selectedNodeId = null;
+  state.detailMode = taskId ? 'task' : 'empty';
+  renderTaskSelect();
+  updateUrlState();
+
+  if (!taskId) {
+    clearDetail();
+    await refreshAll();
+    return;
+  }
+
+  const [task, feed] = await Promise.all([
+    getTask(taskId),
+    getTaskFeed(taskId, { limit: 12 }),
+  ]);
+  if (task.error) {
+    clearDetail();
+    return;
+  }
+
+  setDetailHeader('Task', `${task.name} · ${shortCid(task.task_id)}`);
+  const frontierCards = task.frontier?.length
+    ? task.frontier.slice(0, 4).map(renderExperimentCard).join('')
+    : '<div class="empty-panel">No frontier experiments yet.</div>';
+  const recentStories = feed.length
+    ? feed.slice(0, 6).map(event => renderStoryCard(event, true)).join('')
+    : '<div class="empty-panel">No recent task activity yet.</div>';
+
+  showDetail(`
+    <div class="profile-card">
+      <div class="profile-title-row">
+        <h3>${escHtml(task.name)}</h3>
+        <span class="activity-badge hybrid">${escHtml(task.task_type || 'task')}</span>
+      </div>
+      <p class="profile-bio">${escHtml(task.description || 'Independent research objective')}</p>
+      <div class="profile-links">
+        <span>${escHtml(task.metric || 'val_bpb')} · ${escHtml(task.goal || 'minimize')}</span>
+        <span>${task.participant_count} operators</span>
+        <span>${task.experiment_count} experiments</span>
+      </div>
+      ${renderShareActions(buildSharePath({ task: task.task_id }), 'copy task link')}
+    </div>
+
+    <div class="detail-section">
+      <div class="hero-stat-row">
+        <div class="stat-card"><span class="label">Best</span><span class="value">${task.best_val_bpb != null ? task.best_val_bpb.toFixed(6) : '—'}</span></div>
+        <div class="stat-card"><span class="label">Frontier</span><span class="value">${task.frontier_size}</span></div>
+        <div class="stat-card"><span class="label">Updated</span><span class="value">${timeAgo(task.latest_activity)}</span></div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-field">
+        <label>Mission</label>
+        <div class="value">${escHtml(task.description || '—')}</div>
+      </div>
+      <div class="detail-field">
+        <label>Join locally</label>
+        <div class="value">spore daemon --task ${escHtml(task.task_id)}</div>
+      </div>
+      <div class="detail-field">
+        <label>Participants</label>
+        <div class="value">${task.participants?.length ? escHtml(task.participants.map(shortCid).join(', ')) : '—'}</div>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <label>Current frontier</label>
+      <div class="record-list">${frontierCards}</div>
+    </div>
+
+    <div class="detail-section">
+      <label>Live task room</label>
+      <div class="record-list">${recentStories}</div>
+    </div>
+  `);
+
+  await refreshAll();
+}
+
 async function selectNode(nodeId) {
   state.selectedNodeId = nodeId;
   state.selectedExperimentId = null;
+  state.selectedTaskDetailId = null;
   state.detailMode = 'node';
+  updateUrlState();
 
   const payload = await getNodeDetail(nodeId, taskParams(state.nodeDetailFilters));
   if (payload.error) return;
@@ -449,6 +708,7 @@ async function selectNode(nodeId) {
 
   showDetail(`
     ${renderNodeSummaryCard(node)}
+    ${renderShareActions(buildSharePath({ task: state.selectedTaskId, node: node.node_id }), 'copy node link')}
     <div class="detail-section">
       <div class="detail-field">
         <label>Hardware</label>
@@ -530,10 +790,14 @@ async function loadCode(codeCid) {
 async function selectExperiment(cid) {
   state.selectedExperimentId = cid;
   state.selectedNodeId = null;
+  state.selectedTaskDetailId = null;
   state.detailMode = 'experiment';
 
   const record = await getExperiment(cid);
   if (record.error) return;
+  state.selectedTaskId = record.task_id || state.selectedTaskId;
+  renderTaskSelect();
+  updateUrlState();
 
   const [ancestors, children, nodePayload, taskPayload] = await Promise.all([
     getAncestor(cid),
@@ -631,6 +895,7 @@ async function selectExperiment(cid) {
           </div>
         </div>
       </div>
+      ${renderShareActions(buildSharePath({ task: record.task_id, experiment: record.id }), 'copy experiment link')}
     </div>
 
     <div class="detail-section">
@@ -678,23 +943,6 @@ async function selectExperiment(cid) {
   updateSelection(cid, ancestors.map(item => item.id));
 }
 
-function addActivity(record) {
-  const feed = document.getElementById('activity-feed');
-  const item = document.createElement('div');
-  item.className = 'activity-item';
-  item.innerHTML = `
-    <span class="time">${timeAgo(record.timestamp)}</span>
-    <span class="status-badge ${record.status}">${record.status}</span>
-    <span class="cid-link" onclick="window.__select('${record.id}')">${shortCid(record.id)}</span>
-    <span>${record.val_bpb.toFixed(6)}</span>
-    <span class="desc">${escHtml(record.description.slice(0, 72))}</span>
-  `;
-  feed.prepend(item);
-  while (feed.children.length > 120) {
-    feed.removeChild(feed.lastChild);
-  }
-}
-
 function connectWs() {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
@@ -722,19 +970,21 @@ function connectWs() {
       if (record.parent) {
         state.graphData.edge.push({ source: record.parent, target: record.id });
       }
-      addActivity(record);
     }
 
     const frontier = await getFrontier(taskParams());
     state.graphData.frontier_id = frontier.map(item => item.id);
     renderDag(getFilteredGraph(), state.selectedExperimentId);
 
-    await Promise.all([refreshStat(), refreshFrontier(), refreshTasks()]);
+    await Promise.all([refreshStat(), refreshFrontier(), refreshTasks(), refreshPulse()]);
     if (document.getElementById('nodes-tab').classList.contains('active') || state.detailMode === 'node') {
       await refreshNodes();
     }
     if (state.detailMode === 'node' && state.selectedNodeId === record.node_id) {
       await selectNode(state.selectedNodeId);
+    }
+    if (state.detailMode === 'task' && state.selectedTaskDetailId === record.task_id) {
+      await selectTask(state.selectedTaskDetailId);
     }
   };
 }
@@ -790,9 +1040,7 @@ function bindEvents() {
   });
 
   taskSelect.addEventListener('change', () => {
-    state.selectedTaskId = taskSelect.value;
-    clearDetail();
-    refreshAll();
+    selectTask(taskSelect.value);
   });
 
   document.addEventListener('keydown', e => {
@@ -807,12 +1055,44 @@ function bindEvents() {
   });
 }
 
+async function applyUrlState() {
+  const params = new URLSearchParams(window.location.search);
+  const taskId = params.get('task') || '';
+  const experimentId = params.get('experiment');
+  const nodeId = params.get('node');
+
+  if (taskId) {
+    state.selectedTaskId = taskId;
+    renderTaskSelect();
+  }
+
+  if (experimentId) {
+    await selectExperiment(experimentId);
+    return;
+  }
+  if (nodeId) {
+    await selectNode(nodeId);
+    return;
+  }
+  if (taskId) {
+    await selectTask(taskId);
+  }
+}
+
 window.__select = cid => {
   if (cid) selectExperiment(cid);
 };
 
 window.__selectNode = nodeId => {
   if (nodeId) selectNode(nodeId);
+};
+
+window.__selectTask = taskId => {
+  if (taskId !== undefined) selectTask(taskId);
+};
+
+window.__copyLink = url => {
+  if (url) copyText(url);
 };
 
 async function init() {
@@ -825,16 +1105,12 @@ async function init() {
     refreshStat(),
     refreshFrontier(),
     refreshNodes(),
+    refreshPulse(),
   ]);
 
   state.graphData = graphData;
-  state.graphData.node
-    .slice()
-    .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, 50)
-    .forEach(addActivity);
-
   renderDag(getFilteredGraph(), null);
+  await applyUrlState();
   connectWs();
 
   window.setInterval(() => {
@@ -843,9 +1119,10 @@ async function init() {
 }
 
 async function refreshAll() {
-  await Promise.all([refreshTasks(), refreshStat(), refreshFrontier(), refreshNodes()]);
+  await Promise.all([refreshTasks(), refreshStat(), refreshFrontier(), refreshNodes(), refreshPulse()]);
   state.graphData = await getGraph(taskParams());
   renderDag(getFilteredGraph(), state.selectedExperimentId);
+  updateUrlState();
 }
 
 init();

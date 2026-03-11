@@ -27,6 +27,22 @@ export async function getTask(taskId) {
   return fetchJson(`/api/task/${taskId}`);
 }
 
+export async function getTaskFeed(taskId, params = {}) {
+  return fetchJson(`/api/task/${taskId}/feed${buildQuery(params)}`);
+}
+
+export async function getFeed(params = {}) {
+  return fetchJson(`/api/feed${buildQuery(params)}`);
+}
+
+export async function getHotTasks(params = {}) {
+  return fetchJson(`/api/tasks/hot${buildQuery(params)}`);
+}
+
+export async function getPulse(params = {}) {
+  return fetchJson(`/api/pulse${buildQuery(params)}`);
+}
+
 export async function getGraph(params = {}) {
   return fetchJson(`/api/graph${buildQuery(params)}`);
 }

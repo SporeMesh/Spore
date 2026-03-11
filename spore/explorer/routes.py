@@ -6,7 +6,7 @@ from fastapi import FastAPI
 
 from ..node import SporeNode
 from ..profile import NodeProfile
-from .feed import hot_tasks, recent_feed
+from .feed import hot_tasks, network_pulse, recent_feed
 from .state import (
     all_task_summaries,
     collect_explorer_state,
@@ -29,6 +29,15 @@ def register_routes(app: FastAPI, node: SporeNode, *, ws_client_count: callable)
     @app.get("/api/tasks/hot")
     async def hot_task_list(limit: int = 10):
         return hot_tasks(node, limit=limit)
+
+    @app.get("/api/pulse")
+    async def pulse(task_id: str = "", window_seconds: int = 21600, limit: int = 5):
+        return network_pulse(
+            node,
+            task_id=task_id,
+            window_seconds=window_seconds,
+            limit=limit,
+        )
 
     @app.get("/api/stat")
     async def stat(task_id: str = ""):

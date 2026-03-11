@@ -251,6 +251,18 @@ def test_feed_and_hot_task_endpoints_return_derived_activity(
         assert len(tasks) == 1
         assert tasks[0]["task_id"] == keep_a.id
         assert tasks[0]["recent_experiment_count"] == 2
+        assert tasks[0]["participant_count"] == 2
+
+        pulse_response = client.get("/api/pulse", params={"limit": 4})
+        assert pulse_response.status_code == 200
+        pulse = pulse_response.json()
+        assert pulse["experiment_count_recent"] == 2
+        assert pulse["keep_count_recent"] == 1
+        assert pulse["discard_count_recent"] == 1
+        assert pulse["active_node_count_recent"] == 2
+        assert pulse["active_task_count_recent"] == 1
+        assert pulse["stories"][0]["record"]["id"] == discard_b.id
+        assert pulse["hot_tasks"][0]["task_id"] == keep_a.id
 
         node_activity = client.get(f"/api/node/{keep_a.node_id}/activity")
         assert node_activity.status_code == 200
