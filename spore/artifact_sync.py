@@ -58,9 +58,13 @@ class ArtifactSync:
 
             for addr in pending:
                 attempted.add(addr)
-                code_bytes = await node.gossip.request_code(
-                    addr, code_cid, timeout=10.0
-                )
+                try:
+                    code_bytes = await node.gossip.request_code(
+                        addr, code_cid, timeout=10.0
+                    )
+                except Exception as exc:
+                    log.warning("Code fetch from %s failed: %s", addr, exc)
+                    continue
                 if code_bytes is None:
                     continue
                 actual_cid = hashlib.sha256(code_bytes).hexdigest()

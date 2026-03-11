@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from .record import ExperimentRecord, Status
@@ -52,6 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_timestamp ON experiment(timestamp);
 class ResearchGraph:
     def __init__(self, db_path: str | Path = ":memory:"):
         self.db_path = str(db_path)
+        self._lock = threading.RLock()
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=10)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
@@ -61,7 +63,8 @@ class ResearchGraph:
         self.conn.executescript(INDEX_SCHEMA)
 
     def close(self):
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
     def insert(self, record: ExperimentRecord) -> bool:
         if not record.id:
@@ -69,49 +72,57 @@ class ResearchGraph:
         if not record.verify_cid():
             raise ValueError(f"CID mismatch for record {record.id}")
         try:
-            self.conn.execute(
-                """INSERT INTO experiment (
-                    id, parent, depth, task_id, code_cid, diff, dataset_cid,
-                    prepare_cid, time_budget, val_bpb, peak_vram_mb, num_steps,
-                    num_params, status, description, hypothesis, agent_model,
-                    gpu_model, cuda_version, torch_version, node_id, timestamp,
-                    signature, version
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )""",
-                (
-                    record.id,
-                    record.parent,
-                    record.depth,
-                    record.task_id,
-                    record.code_cid,
-                    record.diff,
-                    record.dataset_cid,
-                    record.prepare_cid,
-                    record.time_budget,
-                    record.val_bpb,
-                    record.peak_vram_mb,
-                    record.num_steps,
-                    record.num_params,
-                    record.status.value
-                    if isinstance(record.status, Status)
-                    else record.status,
-                    record.description,
-                    record.hypothesis,
-                    record.agent_model,
-                    record.gpu_model,
-                    record.cuda_version,
-                    record.torch_version,
-                    record.node_id,
-                    record.timestamp,
-                    record.signature,
-                    record.version,
-                ),
-            )
-            self.conn.commit()
+            with self._lock:
+                self.conn.execute(
+                    """INSERT INTO experiment (
+                        id, parent, depth, task_id, code_cid, diff, dataset_cid,
+                        prepare_cid, time_budget, val_bpb, peak_vram_mb, num_steps,
+                        num_params, status, description, hypothesis, agent_model,
+                        gpu_model, cuda_version, torch_version, node_id, timestamp,
+                        signature, version
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )""",
+                    (
+                        record.id,
+                        record.parent,
+                        record.depth,
+                        record.task_id,
+                        record.code_cid,
+                        record.diff,
+                        record.dataset_cid,
+                        record.prepare_cid,
+                        record.time_budget,
+                        record.val_bpb,
+                        record.peak_vram_mb,
+                        record.num_steps,
+                        record.num_params,
+                        record.status.value
+                        if isinstance(record.status, Status)
+                        else record.status,
+                        record.description,
+                        record.hypothesis,
+                        record.agent_model,
+                        record.gpu_model,
+                        record.cuda_version,
+                        record.torch_version,
+                        record.node_id,
+                        record.timestamp,
+                        record.signature,
+                        record.version,
+                    ),
+                )
+                self.conn.commit()
             return True
         except sqlite3.IntegrityError:
             return False
+
+    def latest_timestamp(self) -> int:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COALESCE(MAX(timestamp), 0) AS ts FROM experiment"
+            ).fetchone()
+        return int(row["ts"]) if row else 0
 
     def get(self, cid: str) -> ExperimentRecord | None:
         row = self.conn.execute(

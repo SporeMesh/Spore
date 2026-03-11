@@ -17,6 +17,7 @@ def test_start_help_matches_run_modes():
     assert "--web-port" in result.output
     assert "--no-train" in result.output
     assert "--verify-only" in result.output
+    assert "--enable-cache" in result.output
 
 
 def test_start_forwards_runtime_flags(tmp_path, monkeypatch):
@@ -49,6 +50,7 @@ def test_start_forwards_runtime_flags(tmp_path, monkeypatch):
             "--peer",
             "peer.sporemesh.com:7470",
             "--verify-only",
+            "--enable-cache",
             "--resource",
             "50",
             "--data-dir",
@@ -73,6 +75,7 @@ def test_start_forwards_runtime_flags(tmp_path, monkeypatch):
         "50",
         "--data-dir",
         str(data_dir),
+        "--enable-cache",
     ]
     assert launched["start_new_session"] is True
     assert daemon_module.PID_FILE.read_text().strip() == "43210"

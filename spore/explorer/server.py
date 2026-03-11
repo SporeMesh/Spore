@@ -49,7 +49,7 @@ class ConnectionManager:
         return len(self._active)
 
 
-def create_app(node: SporeNode) -> FastAPI:
+def create_app(node: SporeNode, *, enable_cache: bool = False) -> FastAPI:
     app = FastAPI(title="Spore Explorer", version="0.2.0")
     ws_manager = ConnectionManager()
 
@@ -68,7 +68,12 @@ def create_app(node: SporeNode) -> FastAPI:
         return HTMLResponse((STATIC_DIR / "index.html").read_text())
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    register_routes(app, node, ws_client_count=lambda: ws_manager.count)
+    register_routes(
+        app,
+        node,
+        ws_client_count=lambda: ws_manager.count,
+        enable_cache=enable_cache,
+    )
 
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):

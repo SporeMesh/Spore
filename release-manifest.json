@@ -1,9 +1,9 @@
 {
-  "version": "0.6.1",
-  "pip_spec": "sporemesh==0.6.1",
+  "version": "0.6.2",
+  "pip_spec": "sporemesh==0.6.2",
   "instructions": [
     "copy_workspace",
     "backfill_tasks"
   ],
-  "notes": "Release 0.6.1"
+  "notes": "Release 0.6.2"
 }

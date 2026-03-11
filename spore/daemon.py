@@ -67,6 +67,11 @@ def register_command(cli: click.Group):
     @click.option(
         "--data-dir", "-d", default=None, help="Data directory (default: ~/.spore)"
     )
+    @click.option(
+        "--enable-cache/--disable-cache",
+        default=None,
+        help="Enable cached explorer read models for heavy sync-only nodes",
+    )
     def start(
         port: int,
         web_port: int,
@@ -78,6 +83,7 @@ def register_command(cli: click.Group):
         genesis: bool,
         resource: int,
         data_dir: str | None,
+        enable_cache: bool | None,
     ):
         """Start the Spore node as a background daemon."""
         from pathlib import Path
@@ -119,6 +125,8 @@ def register_command(cli: click.Group):
             cmd.extend(["--resource", str(resource)])
         if data_dir:
             cmd.extend(["--data-dir", data_dir])
+        if enable_cache is not None:
+            cmd.append("--enable-cache" if enable_cache else "--disable-cache")
 
         with open(LOG_FILE, "a") as log_fh:
             proc = subprocess.Popen(

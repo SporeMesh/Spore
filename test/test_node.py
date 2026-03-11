@@ -106,11 +106,16 @@ async def test_start_requests_pex_before_sync(tmp_path, monkeypatch):
     async def fake_request_control_sync(addr: str, since_timestamp: int = 0):
         calls.append(("control_sync", addr))
 
+    async def fake_request_task_sync(addr: str, since_timestamp: int = 0):
+        calls.append(("task_sync", addr))
+
     monkeypatch.setattr(node.gossip, "start", fake_start)
     monkeypatch.setattr(node.gossip, "connect_to_peer", fake_connect)
     monkeypatch.setattr(node.gossip, "request_pex", fake_request_pex)
     monkeypatch.setattr(node.gossip, "request_sync", fake_request_sync)
     monkeypatch.setattr(node.gossip, "request_control_sync", fake_request_control_sync)
+    monkeypatch.setattr(node.gossip, "request_task_sync", fake_request_task_sync)
+    monkeypatch.setattr(node.peer_sync, "start", lambda owner: None)
 
     await node.start()
 
@@ -119,9 +124,23 @@ async def test_start_requests_pex_before_sync(tmp_path, monkeypatch):
         ("pex", "peer.sporemesh.com:7470"),
         ("sync", "peer.sporemesh.com:7470"),
         ("control_sync", "peer.sporemesh.com:7470"),
+        ("task_sync", "peer.sporemesh.com:7470"),
     ]
 
     node.graph.close()
+    node.control.close()
+    node.reputation.close()
+
+
+def test_bootstrap_peer_is_not_persisted(tmp_path):
+    node = SporeNode(NodeConfig(port=0, data_dir=str(tmp_path)))
+
+    node._save_peer("peer.sporemesh.com:7470")
+
+    assert node._load_known_peer() == []
+
+    node.graph.close()
+    node.profile.close()
     node.control.close()
     node.reputation.close()
 

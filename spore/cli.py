@@ -101,6 +101,11 @@ def init(auto_update: bool):
 @click.option(
     "--data-dir", "-d", default=None, help="Data directory (default: ~/.spore)"
 )
+@click.option(
+    "--enable-cache/--disable-cache",
+    default=None,
+    help="Enable cached explorer read models for heavy sync-only nodes",
+)
 def run(
     port: int,
     web_port: int,
@@ -112,6 +117,7 @@ def run(
     genesis: bool,
     resource: int,
     data_dir: str | None,
+    enable_cache: bool | None,
 ):
     """Run the Spore node in the foreground.
 
@@ -132,6 +138,8 @@ def run(
         config.task_id = task_id
     if auto_update is not None:
         config.auto_update = auto_update
+    if enable_cache is not None:
+        config.enable_cache = enable_cache
     config.save(data_path / "config.toml")
 
     node = SporeNode(config)
@@ -202,7 +210,7 @@ def run(
         actual_web_port = _find_available_port(web_port)
         if actual_web_port:
             try:
-                app = create_app(node)
+                app = create_app(node, enable_cache=config.enable_cache)
                 uvi_config = uvicorn.Config(
                     app, host="0.0.0.0", port=actual_web_port, log_level="warning"
                 )

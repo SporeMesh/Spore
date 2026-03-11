@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,7 @@ from .control_store import ControlStore
 from .gossip import GossipServer
 from .gpu import normalize_gpu_model
 from .graph import ResearchGraph
+from .peer_sync import PeerSyncLoop
 from .profile import NodeProfile, NodeProfileStore
 from .record import ExperimentRecord, generate_keypair
 from .store import ArtifactStore
@@ -47,6 +49,7 @@ class NodeConfig:
         "https://raw.githubusercontent.com/SporeMesh/Spore/main/release-manifest.json"
     )
     data_dir: str = str(SPORE_DIR)
+    enable_cache: bool = False
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> NodeConfig:
@@ -67,6 +70,7 @@ class NodeConfig:
                 "https://raw.githubusercontent.com/SporeMesh/Spore/main/release-manifest.json",
             ),
             data_dir=data.get("data_dir", str(SPORE_DIR)),
+            enable_cache=data.get("enable_cache", False),
         )
 
     def save(self, path: str | Path | None = None):
@@ -83,6 +87,7 @@ class NodeConfig:
                     f"update_interval_sec = {self.update_interval_sec}",
                     f'update_manifest_url = "{self.update_manifest_url}"',
                     f'data_dir = "{self.data_dir}"',
+                    f"enable_cache = {str(self.enable_cache).lower()}",
                 ]
             )
             + "\n"
@@ -105,6 +110,7 @@ class SporeNode:
         self.reputation = ReputationStore(self.data_dir / "db" / "reputation.sqlite")
         self.training = TrainingRuntime()
         self.artifact = ArtifactSync()
+        self.peer_sync = PeerSyncLoop()
         self.workspace: Path | None = None
 
         self._backfill_tasks()
@@ -257,16 +263,17 @@ class SporeNode:
     async def start(self, *, skip_peer: bool = False):
         await self.gossip.start()
         if not skip_peer:
+            known_peers = self._load_known_peer()
             peers = list(
                 dict.fromkeys(
                     self.config.peer
-                    + self._load_known_peer()
-                    + (BOOTSTRAP_PEER if not self.config.peer else [])
+                    + known_peers
+                    + (BOOTSTRAP_PEER if not (self.config.peer or known_peers) else [])
                 )
             )
             for peer_addr in peers:
                 host, _, port_str = peer_addr.partition(":")
-                if not port_str:
+                if not port_str or self._should_skip_peer(peer_addr):
                     continue
                 if await self.gossip.connect_to_peer(host, int(port_str)):
                     self._save_peer(peer_addr)
@@ -278,6 +285,9 @@ class SporeNode:
                     await self.gossip.request_task_sync(
                         peer_addr, since_timestamp=self.task.latest_timestamp()
                     )
+                else:
+                    self._drop_peer(peer_addr)
+            self.peer_sync.start(self)
         for manifest in self.task.manifests():
             await self.gossip.broadcast_task(manifest)
         if self.profile.get(self.node_id) is not None:
@@ -285,6 +295,7 @@ class SporeNode:
         self.active_task_id = self.config.task_id or self._auto_select_task()
 
     async def stop(self):
+        await self.peer_sync.stop()
         await self.gossip.stop()
         self.graph.close()
         self.profile.close()
@@ -421,14 +432,60 @@ class SporeNode:
         path = self.data_dir / KNOWN_PEER_FILE
         if not path.exists():
             return []
-        return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+        return [
+            line.strip()
+            for line in path.read_text().splitlines()
+            if line.strip() and line.strip() not in BOOTSTRAP_PEER
+        ]
 
     def _save_peer(self, addr: str):
+        if addr in BOOTSTRAP_PEER:
+            return
         path = self.data_dir / KNOWN_PEER_FILE
         existing = set(self._load_known_peer())
         if addr not in existing:
             with open(path, "a") as handle:
                 handle.write(addr + "\n")
+
+    def _drop_peer(self, addr: str):
+        path = self.data_dir / KNOWN_PEER_FILE
+        if path.exists():
+            peers = [peer for peer in self._load_known_peer() if peer != addr]
+            path.write_text("\n".join(peers) + ("\n" if peers else ""))
+        if addr in self.config.peer:
+            self.config.peer = [peer for peer in self.config.peer if peer != addr]
+            self.config.save(self.data_dir / "config.toml")
+
+    def _should_skip_peer(self, peer_addr: str) -> bool:
+        host, _, port_str = peer_addr.partition(":")
+        if not port_str:
+            return True
+        try:
+            port = int(port_str)
+        except ValueError:
+            return True
+        if port != self.config.port:
+            return False
+        if host in {"127.0.0.1", "localhost", self.config.host}:
+            return True
+        local_hosts = {"127.0.0.1", "localhost", self.config.host}
+        try:
+            local_hosts.update(
+                info[4][0]
+                for info in socket.getaddrinfo(socket.gethostname(), None)
+                if info[4]
+            )
+        except socket.gaierror:
+            pass
+        try:
+            target_hosts = {
+                info[4][0]
+                for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                if info[4]
+            }
+        except socket.gaierror:
+            return False
+        return bool(target_hosts & local_hosts)
 
     @staticmethod
     def _detect_gpu() -> str:

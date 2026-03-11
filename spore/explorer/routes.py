@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from ..node import SporeNode
 from ..profile import NodeProfile
+from .cache import ExplorerCache
 from .feed import hot_tasks, network_pulse, recent_feed
 from .state import (
     all_task_summaries,
@@ -17,7 +18,15 @@ from .state import (
 )
 
 
-def register_routes(app: FastAPI, node: SporeNode, *, ws_client_count: callable):
+def register_routes(
+    app: FastAPI,
+    node: SporeNode,
+    *,
+    ws_client_count: callable,
+    enable_cache: bool = False,
+):
+    cache = ExplorerCache() if enable_cache else None
+
     @app.get("/api/feed")
     async def feed(task_id: str = "", limit: int = 50):
         return recent_feed(node, task_id=task_id, limit=limit)
@@ -41,8 +50,12 @@ def register_routes(app: FastAPI, node: SporeNode, *, ws_client_count: callable)
 
     @app.get("/api/stat")
     async def stat(task_id: str = ""):
-        explorer = collect_explorer_state(node, task_id)
-        tasks = all_task_summaries(node)
+        explorer = (
+            cache.get_state(node, task_id)
+            if cache is not None
+            else collect_explorer_state(node, task_id)
+        )
+        tasks = cache.get_tasks(node) if cache is not None else all_task_summaries(node)
         best_bpb = explorer["frontier"][0].val_bpb if explorer["frontier"] else None
         return {
             "task_id": explorer["task_id"],
@@ -68,15 +81,23 @@ def register_routes(app: FastAPI, node: SporeNode, *, ws_client_count: callable)
 
     @app.get("/api/tasks")
     async def tasks():
-        return all_task_summaries(node)
+        return cache.get_tasks(node) if cache is not None else all_task_summaries(node)
 
     @app.get("/api/task/{task_id}")
     async def task_detail(task_id: str):
         task = node.get_task(task_id)
         if task is None:
             return {"error": "not found"}
-        explorer = collect_explorer_state(node, task_id)
-        data = task_summary(node, task)
+        explorer = (
+            cache.get_state(node, task_id)
+            if cache is not None
+            else collect_explorer_state(node, task_id)
+        )
+        data = (
+            cache.get_task_detail(node, task_id)
+            if cache is not None
+            else task_summary(node, task)
+        )
         data["frontier"] = [
             record_with_profile(
                 node,
@@ -107,7 +128,11 @@ def register_routes(app: FastAPI, node: SporeNode, *, ws_client_count: callable)
 
     @app.get("/api/graph")
     async def graph(task_id: str = ""):
-        explorer = collect_explorer_state(node, task_id)
+        explorer = (
+            cache.get_state(node, task_id)
+            if cache is not None
+            else collect_explorer_state(node, task_id)
+        )
         nodes = [
             record_with_profile(
                 node,
@@ -208,7 +233,11 @@ def register_routes(app: FastAPI, node: SporeNode, *, ws_client_count: callable)
 
     @app.get("/api/recent")
     async def recent(limit: int = 50, task_id: str = ""):
-        explorer = collect_explorer_state(node, task_id)
+        explorer = (
+            cache.get_state(node, task_id)
+            if cache is not None
+            else collect_explorer_state(node, task_id)
+        )
         records = (
             node.graph.recent_by_task(explorer["task_id"], limit=limit)
             if explorer["task_id"]
