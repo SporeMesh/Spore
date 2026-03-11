@@ -15,6 +15,7 @@ from collections.abc import Callable
 from .control import SignedControlEvent
 from .profile import NodeProfile
 from .record import ExperimentRecord
+from .task import TaskManifest
 from .wire import MessageType, encode_message, read_message
 
 log = logging.getLogger(__name__)
@@ -28,9 +29,11 @@ class GossipServer:
         host: str = "0.0.0.0",
         port: int = 7470,
         on_experiment: Callable[[ExperimentRecord], None] | None = None,
+        on_task: Callable[[TaskManifest], None] | None = None,
         on_sync_request: Callable[[int], list[ExperimentRecord]] | None = None,
         on_control_sync_request: Callable[[int], list[SignedControlEvent]]
         | None = None,
+        on_task_sync_request: Callable[[int], list[TaskManifest]] | None = None,
         on_new_peer: Callable[[str], None] | None = None,
         on_control_event: Callable[[SignedControlEvent], None] | None = None,
         on_challenge: Callable[[dict], None] | None = None,
@@ -43,8 +46,10 @@ class GossipServer:
         self.host = host
         self.port = port
         self.on_experiment = on_experiment
+        self.on_task = on_task
         self.on_sync_request = on_sync_request
         self.on_control_sync_request = on_control_sync_request
+        self.on_task_sync_request = on_task_sync_request
         self.on_new_peer = on_new_peer
         self.on_control_event = on_control_event
         self.on_challenge = on_challenge
@@ -59,11 +64,14 @@ class GossipServer:
                 len(inspect.signature(self.on_experiment).parameters) > 1
             )
         self.peers: dict[str, tuple[asyncio.StreamReader, asyncio.StreamWriter]] = {}
+        self._advertised_peers: set[str] = set()
         self.seen_cid: set[str] = set()
+        self.seen_task: set[str] = set()
         self.seen_event: set[str] = set()
         self._server: asyncio.Server | None = None
         self._tasks: list[asyncio.Task] = []
         self._pending_code: dict[str, asyncio.Future] = {}
+        self._pending_sync: dict[tuple[str, str], asyncio.Future] = {}
 
     async def start(self):
         self._server = await asyncio.start_server(
@@ -97,6 +105,7 @@ class GossipServer:
         try:
             reader, writer = await asyncio.open_connection(host, port)
             self.peers[addr] = (reader, writer)
+            self._advertised_peers.add(addr)
             task = asyncio.create_task(self._listen(addr, reader))
             self._tasks.append(task)
             log.info("Connected to peer %s", addr)
@@ -124,6 +133,23 @@ class GossipServer:
                 log.warning("Failed to send to %s: %s", addr, e)
                 disconnected.append(addr)
 
+        for addr in disconnected:
+            self._remove_peer(addr)
+
+    async def broadcast_task(self, manifest: TaskManifest):
+        """Broadcast a task manifest to all connected peers."""
+        if manifest.task_id in self.seen_task:
+            return
+        self.seen_task.add(manifest.task_id)
+        msg = encode_message(MessageType.TASK, manifest.to_dict())
+        disconnected = []
+        for addr, (_, writer) in self.peers.items():
+            try:
+                writer.write(msg)
+                await writer.drain()
+            except Exception as exc:
+                log.warning("Failed to send task to %s: %s", addr, exc)
+                disconnected.append(addr)
         for addr in disconnected:
             self._remove_peer(addr)
 
@@ -167,10 +193,14 @@ class GossipServer:
         writer.write(msg)
         await writer.drain()
 
-    async def request_sync(self, addr: str, since_timestamp: int = 0):
+    async def request_sync(
+        self, addr: str, since_timestamp: int = 0, timeout: float = 30.0
+    ) -> dict | None:
         """Request all experiments from a peer since a given timestamp."""
         if addr not in self.peers:
-            return
+            return None
+        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+        self._pending_sync[(addr, MessageType.SYNC_RESPONSE)] = fut
         _, writer = self.peers[addr]
         msg = encode_message(
             MessageType.SYNC_REQUEST,
@@ -178,11 +208,20 @@ class GossipServer:
         )
         writer.write(msg)
         await writer.drain()
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_sync.pop((addr, MessageType.SYNC_RESPONSE), None)
+            return None
 
-    async def request_control_sync(self, addr: str, since_timestamp: int = 0):
+    async def request_control_sync(
+        self, addr: str, since_timestamp: int = 0, timeout: float = 30.0
+    ) -> dict | None:
         """Request all signed control events from a peer since a given timestamp."""
         if addr not in self.peers:
-            return
+            return None
+        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+        self._pending_sync[(addr, MessageType.CONTROL_SYNC_RESPONSE)] = fut
         _, writer = self.peers[addr]
         msg = encode_message(
             MessageType.CONTROL_SYNC_REQUEST,
@@ -190,6 +229,32 @@ class GossipServer:
         )
         writer.write(msg)
         await writer.drain()
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_sync.pop((addr, MessageType.CONTROL_SYNC_RESPONSE), None)
+            return None
+
+    async def request_task_sync(
+        self, addr: str, since_timestamp: int = 0, timeout: float = 30.0
+    ) -> dict | None:
+        """Request all task manifests from a peer since a given timestamp."""
+        if addr not in self.peers:
+            return None
+        fut: asyncio.Future[dict | None] = asyncio.get_running_loop().create_future()
+        self._pending_sync[(addr, MessageType.TASK_SYNC_RESPONSE)] = fut
+        _, writer = self.peers[addr]
+        msg = encode_message(
+            MessageType.TASK_SYNC_REQUEST,
+            {"since": since_timestamp},
+        )
+        writer.write(msg)
+        await writer.drain()
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_sync.pop((addr, MessageType.TASK_SYNC_RESPONSE), None)
+            return None
 
     async def request_code(
         self, addr: str, code_cid: str, timeout: float = 30.0
@@ -260,6 +325,21 @@ class GossipServer:
             # Re-gossip to other peers (fan-out)
             await self._regossip(record, exclude=addr)
 
+        elif msg_type == MessageType.TASK:
+            manifest = TaskManifest.from_json(payload)
+            if manifest.task_id in self.seen_task:
+                return
+            if not manifest.verify_id():
+                log.warning("Invalid task id from %s, dropping", addr)
+                return
+            if not manifest.verify_signature():
+                log.warning("Invalid task signature from %s, dropping", addr)
+                return
+            self.seen_task.add(manifest.task_id)
+            if self.on_task:
+                self.on_task(manifest)
+            await self._regossip_task(manifest, exclude=addr)
+
         elif msg_type == MessageType.SYNC_REQUEST:
             since = payload.get("since", 0)
             if self.on_sync_request and addr in self.peers:
@@ -272,6 +352,13 @@ class GossipServer:
                     )
                     writer.write(exp_msg)
                     await writer.drain()
+                writer.write(
+                    encode_message(
+                        MessageType.SYNC_RESPONSE,
+                        {"since": since, "count": len(records)},
+                    )
+                )
+                await writer.drain()
                 log.info("Sync response: sent %d records to %s", len(records), addr)
 
         elif msg_type == MessageType.CONTROL_SYNC_REQUEST:
@@ -283,12 +370,53 @@ class GossipServer:
                     control_msg = encode_message(event.type, event.to_dict())
                     writer.write(control_msg)
                     await writer.drain()
+                writer.write(
+                    encode_message(
+                        MessageType.CONTROL_SYNC_RESPONSE,
+                        {"since": since, "count": len(events)},
+                    )
+                )
+                await writer.drain()
                 log.info(
                     "Control sync response: sent %d events to %s", len(events), addr
                 )
 
+        elif msg_type == MessageType.TASK_SYNC_REQUEST:
+            since = payload.get("since", 0)
+            if self.on_task_sync_request and addr in self.peers:
+                tasks = self.on_task_sync_request(since)
+                _, writer = self.peers[addr]
+                for manifest in tasks:
+                    writer.write(encode_message(MessageType.TASK, manifest.to_dict()))
+                    await writer.drain()
+                writer.write(
+                    encode_message(
+                        MessageType.TASK_SYNC_RESPONSE,
+                        {"since": since, "count": len(tasks)},
+                    )
+                )
+                await writer.drain()
+                log.info("Task sync response: sent %d tasks to %s", len(tasks), addr)
+
+        elif msg_type == MessageType.SYNC_RESPONSE:
+            fut = self._pending_sync.pop((addr, MessageType.SYNC_RESPONSE), None)
+            if fut and not fut.done():
+                fut.set_result(dict(payload))
+
+        elif msg_type == MessageType.CONTROL_SYNC_RESPONSE:
+            fut = self._pending_sync.pop(
+                (addr, MessageType.CONTROL_SYNC_RESPONSE), None
+            )
+            if fut and not fut.done():
+                fut.set_result(dict(payload))
+
+        elif msg_type == MessageType.TASK_SYNC_RESPONSE:
+            fut = self._pending_sync.pop((addr, MessageType.TASK_SYNC_RESPONSE), None)
+            if fut and not fut.done():
+                fut.set_result(dict(payload))
+
         elif msg_type == MessageType.PEX_REQUEST:
-            peer_list = [a for a in self.peers if a != addr]
+            peer_list = [a for a in sorted(self._advertised_peers) if a != addr]
             if addr in self.peers:
                 _, writer = self.peers[addr]
                 pex_msg = encode_message(MessageType.PEX_RESPONSE, {"peer": peer_list})
@@ -402,6 +530,14 @@ class GossipServer:
             MessageType.EXPERIMENT,
             json.loads(record.to_json()),
         )
+        await self._send_to_others(msg, exclude)
+
+    async def _regossip_task(self, manifest: TaskManifest, exclude: str):
+        """Forward a task manifest to all peers except the source."""
+        msg = encode_message(MessageType.TASK, manifest.to_dict())
+        await self._send_to_others(msg, exclude)
+
+    async def _send_to_others(self, msg: bytes, exclude: str):
         for addr, (_, writer) in self.peers.items():
             if addr == exclude:
                 continue

@@ -1,318 +1,180 @@
 # Spore Program
 
-This file describes the current operating doctrine for a live Spore network.
+This document describes the live operating doctrine for the current implementation.
 
-It is not the wire spec. It is the practical program: how nodes are expected to behave, what safety rules exist locally, and how to run the network without self-inflicted failure.
+It is not the wire format. It is the practical program for running the network safely.
 
-## 1. Goal
+## 1. Main Principle
 
-Spore exists to discover better `train.py` variants through many cheap, verifiable experiments.
+Spore should behave like:
 
-The network should optimize for:
+- LimeWire for transport
+- signed replayable facts for correctness
 
-- more valid experiments
-- faster convergence on useful code
-- cheap independent reruns
-- low operational fragility
-- identity and attribution without turning metadata into consensus
+Nodes do not need to be online all the time. They do need to exchange durable, signed state when they reconnect.
 
-## 2. Node Roles
+## 2. Task-Scoped Network
 
-Spore currently supports three useful node roles.
+The network is not one global objective anymore.
 
-### 2.1 Research Node
+Rules:
+
+- each experiment belongs to exactly one `task_id`
+- parent and child must share the same `task_id`
+- each task has its own root, frontier, recent feed, and verification flow
+- legacy roots are backfilled into separate legacy tasks automatically
+
+That means “extra roots” are no longer protocol corruption. They are separate tasks unless explicitly created in the same task, which is rejected.
+
+## 3. Node Roles
+
+### Research Node
 
 `spore run`
 
-Responsibilities:
-
-- sync the graph
+- sync experiments, tasks, control events, and artifacts
+- choose a task or auto-follow the most active known task
 - fetch frontier code
-- ask the configured LLM for the next candidate
-- run local experiments
-- publish records and code artifacts
-- verify compatible remote experiments if a workspace exists
+- propose and run new experiments
+- publish results
 
-### 2.2 Verifier-Only Node
+### Verifier-Only Node
 
 `spore run --verify-only`
 
-Responsibilities:
-
-- sync the graph
-- prepare the workspace
-- fetch code artifacts
-- rerun compatible experiments
+- sync the network
+- attach a workspace
+- rerun compatible remote experiments
 - participate in challenges and disputes
 
-Use this when you want a GPU to spend its time stabilizing the network instead of generating new proposals.
-
-### 2.3 Sync-Only Node
+### Sync-Only Node
 
 `spore run --no-train`
 
-Responsibilities:
+- sync and relay all tasks
+- serve artifacts
+- host explorer if desired
 
-- sync the graph
-- gossip data
-- optionally host explorer surfaces
+Use this for `peer.sporemesh.com`.
 
-This is not enough for verification because no training workspace is attached.
+## 4. Research Loop
 
-## 3. Identity
+The local research loop is:
 
-The protocol identity is the Ed25519 `node_id`.
+1. sync peers fully
+2. choose a task
+3. fetch the best compatible frontier inside that task
+4. apply the frontier code
+5. ask the LLM for a replacement `train.py`
+6. reject unsafe proposals locally
+7. run the experiment
+8. publish the signed result plus code artifact
 
-Everything consensus-relevant ties to that:
+If the node cannot yet fetch usable frontier code for a non-empty task, it waits and retries. It should not create a stray root inside that task.
 
-- experiment signatures
-- challenge participation
-- verification credit
-- dispute outcomes
-- reputation accounting
+## 5. Verification Loop
 
-Presentation metadata is separate.
+Verification is:
 
-## 4. Node Profile Metadata
+- task-scoped
+- same-class
+- signed
+- replayable
 
-Profiles are signed side-channel metadata, not protocol identity.
+Rules:
 
-Fields:
+- crash records are skipped
+- the original publisher is not an independent verifier
+- successful reruns emit signed verification events
+- mismatches emit signed challenges
+- challenge responses and disputes are signed control events
+- control events are stored durably and replay after reconnect
+
+## 6. Artifact Doctrine
+
+Experiment records alone are not enough.
+
+Every meaningful rerun depends on the exact `train.py` snapshot referenced by `code_cid`.
+
+Current policy:
+
+- prefetch artifacts when remote experiments arrive
+- share inflight fetches instead of duplicating them
+- verify bytes against CID before caching
+
+## 7. Runtime Safety
+
+### Small CUDA GPUs
+
+For `RTX_3060`-class hardware and similar:
+
+- compile is disabled by policy
+- research and verification do not overlap on one node
+- verification uses an isolated temp workspace
+- proposal validation blocks obviously unsafe or oversized edits
+
+Recommended operator settings:
+
+```bash
+SPORE_DISABLE_COMPILE=1 spore run --resource 50
+SPORE_DISABLE_COMPILE=1 spore run --verify-only --resource 50
+```
+
+### Baseline Discipline
+
+Once a task exists, ordinary experiments should have a parent inside that task.
+
+Only the task root is parentless.
+
+## 8. Profiles
+
+Profiles are signed display metadata only.
 
 - `display_name`
 - `bio`
 - `website`
 - `avatar_url`
 - `donation_address`
-- `timestamp`
-- `schema_version`
 
-Design rules:
+They are useful for explorers and public attribution, but must never affect verification or acceptance.
 
-- `display_name`, not `username`
-- no protocol-level uniqueness
-- no profile field affects reputation or verification
-- wallet and donation metadata are optional and replaceable later
+## 9. Auto-Operator
 
-This lets explorers show human-readable labels without creating name-squatting or identity-recovery problems.
-
-## 5. Experiment Program
-
-The local research loop is:
-
-1. sync the graph
-2. identify the best compatible frontier
-3. fetch and apply the frontier code
-4. ask the LLM for a full replacement `train.py`
-5. validate the returned code locally
-6. run training
-7. publish result and code snapshot
-8. keep or revert locally
-
-This program is intentionally simple. Spore should improve by many cheap experiments, not by making the control plane cleverer than the research itself.
-
-## 6. Local Proposal Safety Policy
-
-Generated code should not be trusted just because it parses.
-
-Current local policy rejects candidates that:
-
-- use obviously broken identifiers like `MAX_SEQ_SIZE`
-- introduce forbidden runtime features such as `subprocess`, `multiprocessing`, `socket`, `ctypes`, or process-kill logic
-- add new `torch.compile` call sites
-- scale model size past the local safe envelope on constrained hardware
-
-On constrained nodes, the policy currently prevents oversized changes to:
-
-- `DEPTH`
-- `ASPECT_RATIO`
-- `HEAD_DIM`
-- `TOTAL_BATCH_SIZE`
-- the derived `DEPTH * ASPECT_RATIO` model-width envelope
-
-Reason:
-
-The network should not repeatedly rediscover that a `3060` can crash on ambitious proposals. Local policy should reject bad candidates before they waste GPU time or flood the graph with avoidable crashes.
-
-## 7. Runtime Safety Rules
-
-### 7.1 Compile Policy
-
-Small CUDA cards default to compile-disabled mode. The local runtime sets:
-
-- `SPORE_DISABLE_COMPILE=1`
-- `TORCHINDUCTOR_COMPILE_THREADS=1`
-
-This is a stability policy, not a benchmark policy.
-
-### 7.2 Serialized Local Work
-
-One node should not simultaneously:
-
-- run its own research experiment
-- run a spot-check
-- run challenge verification
-
-Spore now serializes local training work with a single runtime lock.
-
-### 7.3 Isolated Verification Workspace
-
-Spot-checks and challenge verifications run in a temporary copied workspace.
-
-Reason:
-
-- no accidental overwriting of the active `train.py`
-- no verification mutation leaking into local research state
-
-## 8. Verification Program
-
-Verification should be cheap, same-class, and attributable.
+The built-in operator periodically checks an official release manifest.
 
 Current behavior:
 
-- incoming compatible experiments are probabilistically selected for spot-check
-- crash records are skipped
-- if a rerun is within tolerance, a verification event is propagated
-- if it falls outside tolerance, a challenge is opened
-- compatible independent verifiers volunteer
-- the challenger resolves the dispute after collecting responses or timing out
+- fetch manifest
+- compare versions
+- install newer package if one exists
+- run a constrained instruction set
+- restart `spore run`
 
-Important constraints:
+This is intentionally narrow. The operator is not a remote shell.
 
-- the original publisher is not an independent verifier
-- cross-class val_bpb is not authoritative
-- no same-class peers means no independent verification
+## 10. Public Launch Topology
 
-## 9. Reputation Program
+Recommended launch:
 
-Reputation is event-based and idempotent.
+- 1 sync-only public relay
+- 1 or more research nodes
+- 1 verifier-only node for each fragile or high-traffic hardware class
 
-That means:
+Practical example:
 
-- nodes should be able to receive the same propagated event multiple times
-- score changes should only apply once per `event_id`
-- explorer views should derive from the accumulated store, not local ephemeral memory
+- AWS CPU box: `spore run --no-train`
+- one `3060`: `spore run --verify-only --resource 50`
+- research GPUs: `spore run --resource 50`
 
-Current score semantics:
+## 11. Product Focus
 
-- published count is tracked separately and does not itself change score
-- verified `keep` rewards the publisher
-- verified frontier `keep` rewards the publisher more
-- routine verification does not itself reward the verifier
-- successful challenge and being on the winning side of a resolved dispute reward the participant
-- wrong-side dispute participation and rejected published claims are penalized
+For launch, the important things are:
 
-The wrong behavior that used to exist and must never return:
+- tasks
+- experiments
+- frontier
+- verification
+- disputes
+- artifact availability
 
-- issuing a challenge by itself must not earn verification credit
-- raw verification volume must not farm score
-
-## 10. Artifact Program
-
-Records are not enough. Verification needs the exact code snapshot.
-
-Current artifact doctrine:
-
-- code snapshots are content-addressed by `code_cid`
-- a node should prefetch code when a remote experiment arrives
-- multiple code fetches for the same artifact should share one inflight request
-- the fetched bytes must hash back to the requested CID before caching
-
-The practical consequence is important:
-
-experiment gossip can look healthy while verification still fails if artifact availability is weak.
-
-## 11. Signed Control Facts
-
-Challenge, challenge-response, verification, and dispute messages are now protocol facts, not just transient live gossip.
-
-Design rules:
-
-- each control event is Ed25519-signed by the acting node
-- the signer must match the actor field in the payload
-- events are stored durably in a separate local control-event store
-- peers replay stored signed control events on reconnect
-- reputation changes derive from those replayable facts plus local idempotence
-
-This is the intended blend:
-
-- LimeWire-like transport and availability
-- signed, replayable protocol facts for anything that changes reputation
-
-## 12. Hardware Classes
-
-Spore currently uses normalized verification classes rather than raw device names.
-
-Examples:
-
-- `NVIDIA GeForce RTX 3060` and `RTX_3060` normalize to the same class
-- Apple Metal devices normalize to `APPLE_MPS`
-- CPU-only nodes normalize to `CPU`
-
-This is better than exact-string matching, but it is still an approximation.
-
-Future work should include richer capability bucketing for:
-
-- Apple MPS families
-- CPU nodes
-- mixed-memory or throughput-variant GPUs
-
-## 13. Resource Control
-
-`--resource N` scales batch size, but only within the runtime assumptions of the applied `train.py`.
-
-Operational guidance:
-
-- `50` and `100` are the safest live settings on fragile research nodes
-- arbitrary values like `70` are only safe when the applied frontier code includes the newer batch-snapping logic
-
-This is the important distinction:
-
-- package runtime fixes affect the host
-- frontier `train.py` remains experiment content and can carry older assumptions
-
-## 14. Recommended Live Topology
-
-For a small public network:
-
-- one stronger research node on the best available GPU
-- one research node on the common commodity class you care about
-- one verifier-only node on that commodity class
-
-Example:
-
-- `RTX_5090` research
-- `RTX_3060` research
-- `RTX_3060` verifier-only
-
-That gives you:
-
-- fresh experiments on both classes
-- actual same-class verification on `3060`
-- fewer local resource collisions
-
-## 14. Known Operational Limits
-
-Current limitations that operators should understand:
-
-- a lone hardware class cannot be independently verified
-- old frontier code can still be unstable even after package fixes
-- low-end CUDA hardware can still hit occasional low-level PyTorch/CUDA failures
-- profile metadata gossips live and is not yet part of historical state sync
-
-## 15. What Good Looks Like
-
-A healthy Spore network should show:
-
-- non-zero verified experiments
-- non-zero verifications performed
-- challenges only when same-class disagreement is real
-- explorer names resolving from signed profiles
-- minimal crash spam from clearly invalid LLM proposals
-
-If the graph is growing but verification and reputation stay flat, the first things to check are:
-
-1. same-class peer availability
-2. artifact fetch success
-3. verifier runtime stability
-4. whether the relevant nodes actually have a workspace and verification path enabled
+Global reputation is not the main product claim right now and should not dominate the explorer or operational model.

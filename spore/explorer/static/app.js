@@ -9,10 +9,11 @@ import {
   getExperiment,
   getFrontier,
   getGraph,
-  getLeaderboard,
   getNodeDetail,
   getNodes,
   getStat,
+  getTask,
+  getTasks,
   searchExperiment,
   searchNodes,
   shortCid,
@@ -24,6 +25,8 @@ import { initDag, renderDag, updateSelection, resetHighlight } from './dag.js';
 
 const state = {
   graphData: { node: [], edge: [], frontier_id: [] },
+  tasks: [],
+  selectedTaskId: '',
   selectedExperimentId: null,
   selectedNodeId: null,
   detailMode: 'empty',
@@ -48,6 +51,7 @@ const detailEmpty = document.getElementById('detail-empty');
 const detailContent = document.getElementById('detail-content');
 const searchInput = document.getElementById('search-input');
 const searchResult = document.getElementById('search-result');
+const taskSelect = document.getElementById('task-select');
 
 const nodeFilterEls = {
   activity: document.getElementById('node-activity-filter'),
@@ -101,6 +105,10 @@ function renderFlagPills(record) {
   if (record.verified) pills.push('<span class="mini-pill verified">verified</span>');
   if (record.is_frontier) pills.push('<span class="mini-pill frontier">frontier</span>');
   return pills.join('');
+}
+
+function taskParams(extra = {}) {
+  return state.selectedTaskId ? { task_id: state.selectedTaskId, ...extra } : extra;
 }
 
 function renderNodeName(summary, opts = {}) {
@@ -213,8 +221,12 @@ function renderSearchResult(experiments, nodes) {
 }
 
 async function refreshStat() {
-  const stat = await getStat();
+  const stat = await getStat(taskParams());
+  if (!state.selectedTaskId && stat.active_task_id) {
+    state.selectedTaskId = stat.active_task_id;
+  }
   document.getElementById('stat-total').textContent = stat.experiment_count;
+  document.getElementById('stat-tasks').textContent = stat.task_count ?? '—';
   document.getElementById('stat-nodes').textContent = stat.node_count ?? '—';
   document.getElementById('stat-frontier').textContent = stat.frontier_size;
   document.getElementById('stat-best').textContent = stat.best_val_bpb != null ? stat.best_val_bpb.toFixed(6) : '—';
@@ -223,7 +235,7 @@ async function refreshStat() {
 }
 
 async function refreshFrontier() {
-  const data = await getFrontier();
+  const data = await getFrontier(taskParams());
   const tbody = document.querySelector('#frontier-table tbody');
   tbody.innerHTML = '';
   data.forEach(record => {
@@ -243,12 +255,58 @@ async function refreshFrontier() {
   });
 }
 
+function renderTaskSelect() {
+  taskSelect.innerHTML = '';
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = 'auto';
+  taskSelect.appendChild(auto);
+  state.tasks.forEach(task => {
+    const option = document.createElement('option');
+    option.value = task.task_id;
+    option.textContent = `${task.name} (${shortCid(task.task_id)})`;
+    taskSelect.appendChild(option);
+  });
+  taskSelect.value = state.selectedTaskId;
+}
+
+async function refreshTasks() {
+  state.tasks = await getTasks();
+  if (!state.selectedTaskId && state.tasks.length) {
+    const active = state.tasks.find(task => task.is_active);
+    state.selectedTaskId = (active || state.tasks[0]).task_id;
+  }
+  renderTaskSelect();
+  const tbody = document.querySelector('#task-table tbody');
+  tbody.innerHTML = '';
+  state.tasks.forEach(task => {
+    const tr = document.createElement('tr');
+    tr.className = 'clickable';
+    tr.onclick = () => {
+      state.selectedTaskId = task.task_id;
+      renderTaskSelect();
+      clearDetail();
+      refreshAll();
+    };
+    tr.innerHTML = `
+      <td>${escHtml(task.name)}<div class="muted-cid">${shortCid(task.task_id)}</div></td>
+      <td>${escHtml(task.task_type || task.source)}</td>
+      <td>${task.experiment_count}</td>
+      <td>${task.frontier_size}</td>
+      <td>${task.best_val_bpb != null ? task.best_val_bpb.toFixed(6) : '—'}</td>
+      <td>${task.participant_count}</td>
+      <td>${timeAgo(task.latest_activity)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
 async function refreshNodes() {
-  const params = {
+  const params = taskParams({
     activity: state.nodeFilters.activity,
     status: state.nodeFilters.status,
     sort: state.nodeFilters.sort,
-  };
+  });
   if (state.nodeFilters.has_profile !== 'all') {
     params.has_profile = state.nodeFilters.has_profile;
   }
@@ -270,46 +328,12 @@ async function refreshNodes() {
     tr.innerHTML = `
       <td>${renderNodeName(node, { avatarSize: 'xs' })}</td>
       <td>${renderActivityBadge(node.activity)}</td>
-      <td style="color:${node.reputation.score >= 0 ? 'var(--green)' : 'var(--red)'}">${node.reputation.score.toFixed(1)}</td>
+      <td>${node.task_count}</td>
       <td>${node.experiment_count}</td>
       <td>${node.keep_count}</td>
       <td>${node.frontier_count}</td>
       <td title="${escHtml((node.gpu_models || []).join(', '))}">${escHtml((node.gpu_models || []).slice(0, 2).join(', ') || '—')}</td>
       <td>${timeAgo(node.last_seen)}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-async function refreshLeaderboard() {
-  const data = await getLeaderboard();
-  const tbody = document.querySelector('#leaderboard-table tbody');
-  tbody.innerHTML = '';
-  if (data.length === 0) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="7" class="empty-row">No reputation data yet</td>';
-    tbody.appendChild(tr);
-    return;
-  }
-
-  data.forEach((row, index) => {
-    const display = row.display_name || shortCid(row.node_id);
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${index + 1}</td>
-      <td style="cursor:pointer" onclick="window.__selectNode('${row.node_id}')">
-        ${renderNodeName({
-          node_id: row.node_id,
-          display_name: display,
-          avatar_url: row.avatar_url || '',
-        }, { avatarSize: 'xs' })}
-        <div style="margin-top:4px">${renderActivityBadge(row.activity)}</div>
-      </td>
-      <td style="color:${row.score >= 0 ? 'var(--green)' : 'var(--red)'}">${row.score.toFixed(1)}</td>
-      <td>${row.experiments_published}</td>
-      <td>${row.experiments_verified}</td>
-      <td>${row.disputes_won}</td>
-      <td>${row.disputes_lost}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -336,7 +360,7 @@ function renderNodeSummaryCard(node) {
         </div>
       </div>
       <div class="stat-grid">
-        <div class="stat-card"><span class="label">Score</span><span class="value">${node.reputation.score.toFixed(1)}</span></div>
+        <div class="stat-card"><span class="label">Tasks</span><span class="value">${node.task_count}</span></div>
         <div class="stat-card"><span class="label">Experiments</span><span class="value">${node.experiment_count}</span></div>
         <div class="stat-card"><span class="label">Keep</span><span class="value">${node.keep_count}</span></div>
         <div class="stat-card"><span class="label">Frontier</span><span class="value">${node.frontier_count}</span></div>
@@ -395,7 +419,7 @@ async function selectNode(nodeId) {
   state.selectedExperimentId = null;
   state.detailMode = 'node';
 
-  const payload = await getNodeDetail(nodeId, state.nodeDetailFilters);
+  const payload = await getNodeDetail(nodeId, taskParams(state.nodeDetailFilters));
   if (payload.error) return;
 
   const node = payload.node;
@@ -439,8 +463,8 @@ async function selectNode(nodeId) {
         <div class="value">${formatDateTime(node.first_seen)} to ${formatDateTime(node.last_seen)}</div>
       </div>
       <div class="detail-field">
-        <label>Reputation</label>
-        <div class="value">${node.reputation.experiments_published} published · ${node.reputation.experiments_verified} verified · ${node.reputation.verifications_performed} checks</div>
+        <label>Contribution</label>
+        <div class="value">${node.experiment_count} experiments · ${node.verified_count} verified · ${node.frontier_count} frontier</div>
       </div>
       ${best}
       ${latest}
@@ -511,10 +535,11 @@ async function selectExperiment(cid) {
   const record = await getExperiment(cid);
   if (record.error) return;
 
-  const [ancestors, children, nodePayload] = await Promise.all([
+  const [ancestors, children, nodePayload, taskPayload] = await Promise.all([
     getAncestor(cid),
     getChildren(cid),
-    getNodeDetail(record.node_id),
+    getNodeDetail(record.node_id, taskParams()),
+    getTask(record.task_id),
   ]);
 
   let deltaHtml = '';
@@ -601,7 +626,7 @@ async function selectExperiment(cid) {
           </div>
           <div class="profile-links">
             <button class="inline-link" onclick="window.__selectNode('${node.node_id}')">open node</button>
-            <span>${node.reputation.score.toFixed(1)} score</span>
+            <span>${shortCid(record.task_id)} task</span>
             <span>${node.experiment_count} experiments</span>
           </div>
         </div>
@@ -620,6 +645,10 @@ async function selectExperiment(cid) {
       <div class="detail-field">
         <label>Parent</label>
         <div class="value cid" onclick="window.__select('${record.parent || ''}')">${record.parent ? shortCid(record.parent) : 'genesis'}</div>
+      </div>
+      <div class="detail-field">
+        <label>Task</label>
+        <div class="value">${escHtml(taskPayload?.name || shortCid(record.task_id))}</div>
       </div>
       <div class="detail-field">
         <label>Hardware</label>
@@ -684,6 +713,9 @@ function connectWs() {
     if (msg.event !== 'experiment') return;
 
     const record = msg.data;
+    if (state.selectedTaskId && record.task_id !== state.selectedTaskId) {
+      return;
+    }
     const existing = state.graphData.node.find(node => node.id === record.id);
     if (!existing) {
       state.graphData.node.push(record);
@@ -693,11 +725,11 @@ function connectWs() {
       addActivity(record);
     }
 
-    const frontier = await getFrontier();
+    const frontier = await getFrontier(taskParams());
     state.graphData.frontier_id = frontier.map(item => item.id);
     renderDag(getFilteredGraph(), state.selectedExperimentId);
 
-    await Promise.all([refreshStat(), refreshFrontier(), refreshLeaderboard()]);
+    await Promise.all([refreshStat(), refreshFrontier(), refreshTasks()]);
     if (document.getElementById('nodes-tab').classList.contains('active') || state.detailMode === 'node') {
       await refreshNodes();
     }
@@ -721,8 +753,8 @@ function bindEvents() {
     }
     state.searchTimeout = setTimeout(async () => {
       const [experiments, nodes] = await Promise.all([
-        searchExperiment(query),
-        searchNodes(query),
+        searchExperiment(query, taskParams()),
+        searchNodes(query, taskParams()),
       ]);
       renderSearchResult(experiments, nodes);
     }, 180);
@@ -757,6 +789,12 @@ function bindEvents() {
     });
   });
 
+  taskSelect.addEventListener('change', () => {
+    state.selectedTaskId = taskSelect.value;
+    clearDetail();
+    refreshAll();
+  });
+
   document.addEventListener('keydown', e => {
     if (e.key === '/' && !e.ctrlKey && !e.metaKey && document.activeElement !== searchInput) {
       e.preventDefault();
@@ -781,12 +819,12 @@ async function init() {
   bindEvents();
   initDag(document.getElementById('dag-panel'), selectExperiment);
 
+  await refreshTasks();
   const [graphData] = await Promise.all([
-    getGraph(),
+    getGraph(taskParams()),
     refreshStat(),
     refreshFrontier(),
     refreshNodes(),
-    refreshLeaderboard(),
   ]);
 
   state.graphData = graphData;
@@ -800,11 +838,14 @@ async function init() {
   connectWs();
 
   window.setInterval(() => {
-    refreshStat();
-    refreshFrontier();
-    refreshNodes();
-    refreshLeaderboard();
+    refreshAll();
   }, 10000);
+}
+
+async function refreshAll() {
+  await Promise.all([refreshTasks(), refreshStat(), refreshFrontier(), refreshNodes()]);
+  state.graphData = await getGraph(taskParams());
+  renderDag(getFilteredGraph(), state.selectedExperimentId);
 }
 
 init();

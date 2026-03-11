@@ -45,13 +45,19 @@ class AgentCoordinator:
         self.graph = graph
         self.config = config or CoordinatorConfig()
 
-    def select_parent(self, gpu_class: str | None = None) -> ExperimentRecord | None:
+    def select_parent(
+        self, gpu_class: str | None = None, task_id: str | None = None
+    ) -> ExperimentRecord | None:
         """Select which experiment to build on next.
 
         70% exploit (best frontier), 30% explore (under-explored branches).
         Ratios adapt based on graph state if adaptive=True.
         """
-        frontier = self.graph.frontier(gpu_class=gpu_class)
+        frontier = (
+            self.graph.frontier_by_task(task_id, gpu_class=gpu_class)
+            if task_id
+            else self.graph.frontier(gpu_class=gpu_class)
+        )
         if not frontier:
             return None
 
@@ -93,7 +99,11 @@ class AgentCoordinator:
         insights = self._cross_branch_insights(parent)
 
         # Frontier summary
-        frontier = self.graph.frontier()
+        frontier = (
+            self.graph.frontier_by_task(parent.task_id)
+            if getattr(parent, "task_id", "")
+            else self.graph.frontier()
+        )
         summary = self._frontier_summary(frontier)
 
         # Graph statistics

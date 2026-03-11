@@ -66,7 +66,13 @@ def apply_dispute_event(node, verifier: Verifier, payload: dict):
             verifier.reputation.record_verified(
                 payload.get("original_node_id", record.node_id),
                 record,
-                is_frontier=record.id in {r.id for r in node.graph.frontier()},
+                is_frontier=record.id
+                in {
+                    r.id
+                    for r in node.graph.frontier_by_task(
+                        payload.get("task_id", record.task_id)
+                    )
+                },
             )
         node.graph.mark_verified(experiment_id, True)
         challenger_id = payload.get("challenger_id", "")

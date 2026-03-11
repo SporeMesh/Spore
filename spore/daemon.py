@@ -38,6 +38,12 @@ def register_command(cli: click.Group):
     @click.option("--port", "-p", default=7470, help="Gossip listen port")
     @click.option("--web-port", "-w", default=8470, help="Explorer web UI port")
     @click.option("--peer", "-c", multiple=True, help="Peer address (host:port)")
+    @click.option("--task", "task_id", default="", help="Task ID to follow")
+    @click.option(
+        "--auto-update/--no-auto-update",
+        default=None,
+        help="Enable or disable the built-in auto-operator for this daemon",
+    )
     @click.option(
         "--no-train", is_flag=True, help="Sync-only mode (no experiment runner)"
     )
@@ -65,6 +71,8 @@ def register_command(cli: click.Group):
         port: int,
         web_port: int,
         peer: tuple[str, ...],
+        task_id: str,
+        auto_update: bool | None,
         no_train: bool,
         verify_only: bool,
         genesis: bool,
@@ -97,6 +105,10 @@ def register_command(cli: click.Group):
         ]
         for p in peer:
             cmd.extend(["--peer", p])
+        if task_id:
+            cmd.extend(["--task", task_id])
+        if auto_update is not None:
+            cmd.append("--auto-update" if auto_update else "--no-auto-update")
         if no_train:
             cmd.append("--no-train")
         if verify_only:

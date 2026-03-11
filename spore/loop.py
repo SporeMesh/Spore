@@ -106,8 +106,9 @@ class ExperimentLoop:
     async def run(self):
         """Run baseline if needed, then experiment forever."""
         await self._await_peer_sync()
+        self.node.active_task_id = self.node.config.task_id or self.node.active_task_id
 
-        if self.node.graph.count() == 0:
+        if not self.node.active_task_id:
             # No experiments from peers — run baseline
             ok = await self._run_baseline()
             if not ok:
@@ -118,12 +119,10 @@ class ExperimentLoop:
         else:
             # Graph has experiments from peers — fetch best code
             applied = await self._apply_frontier_code()
-            if not applied:
-                log.info("Could not fetch frontier code, running baseline instead")
-                ok = await self._run_baseline()
-                if not ok:
-                    log.error("Baseline failed.")
-                    return
+            while not applied:
+                log.info("Could not fetch frontier code yet, waiting to retry")
+                await asyncio.sleep(10)
+                applied = await self._apply_frontier_code()
 
         while True:
             try:
@@ -147,7 +146,7 @@ class ExperimentLoop:
 
     async def _apply_frontier_code(self) -> bool:
         """Fetch the best frontier experiment's code and apply as train.py."""
-        best = self.node.graph.best()
+        best = self.node.graph.best_by_task(self.node.active_task_id)
         if best is None:
             return False
 
@@ -209,7 +208,7 @@ class ExperimentLoop:
 
     async def _run_one(self):
         """One experiment: propose → run → publish → keep/revert."""
-        parent = self.coordinator.select_parent()
+        parent = self.coordinator.select_parent(task_id=self.node.active_task_id)
         if parent is None:
             log.info("No frontier experiments yet, waiting...")
             await asyncio.sleep(30)
@@ -273,6 +272,7 @@ class ExperimentLoop:
         return self.runner.make_record(
             result,
             parent=parent,
+            task_id=parent.task_id if parent else self.node.active_task_id,
             diff=diff,
             description=description,
             hypothesis=hypothesis,

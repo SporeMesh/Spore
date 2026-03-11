@@ -168,6 +168,8 @@ def test_stat_and_node_search_include_richer_explorer_data(
     )
     keep_b = make_record(
         second_keypair,
+        parent=keep_a.id,
+        depth=1,
         val_bpb=0.87,
         status=Status.KEEP,
         description="beta on cpu",
@@ -194,11 +196,72 @@ def test_stat_and_node_search_include_richer_explorer_data(
         assert stat_payload["node_count"] == 2
         assert stat_payload["profile_count"] == 1
         assert stat_payload["verified_experiment_count"] == 1
-        assert stat_payload["frontier_node_count"] == 2
+        assert stat_payload["frontier_node_count"] == 1
 
         search_response = client.get("/api/nodes/search", params={"q": "trainer"})
         assert search_response.status_code == 200
         search_payload = search_response.json()
         assert [item["node_id"] for item in search_payload] == [node_id_a]
+    finally:
+        _close_node(node)
+
+
+def test_feed_and_hot_task_endpoints_return_derived_activity(
+    tmp_path, keypair, second_keypair
+):
+    node = SporeNode(NodeConfig(port=0, data_dir=str(tmp_path)))
+    keep_a = make_record(
+        keypair,
+        val_bpb=0.91,
+        status=Status.KEEP,
+        description="improved optimizer",
+    )
+    discard_b = make_record(
+        second_keypair,
+        parent=keep_a.id,
+        depth=1,
+        val_bpb=1.05,
+        status=Status.DISCARD,
+        description="bad width increase",
+    )
+
+    try:
+        node._on_remote_experiment(keep_a)
+        node._on_remote_experiment(discard_b)
+        client = TestClient(create_app(node))
+
+        feed_response = client.get("/api/feed")
+        assert feed_response.status_code == 200
+        feed = feed_response.json()
+        assert len(feed) == 2
+        assert feed[0]["kind"] == "discard"
+        assert feed[0]["record"]["id"] == discard_b.id
+        assert feed[1]["kind"] in {"keep", "frontier_keep"}
+        assert feed[1]["record"]["id"] == keep_a.id
+
+        keeps_response = client.get("/api/keeps/recent")
+        assert keeps_response.status_code == 200
+        keeps = keeps_response.json()
+        assert len(keeps) == 1
+        assert keeps[0]["record"]["id"] == keep_a.id
+
+        tasks_response = client.get("/api/tasks/hot")
+        assert tasks_response.status_code == 200
+        tasks = tasks_response.json()
+        assert len(tasks) == 1
+        assert tasks[0]["task_id"] == keep_a.id
+        assert tasks[0]["recent_experiment_count"] == 2
+
+        node_activity = client.get(f"/api/node/{keep_a.node_id}/activity")
+        assert node_activity.status_code == 200
+        activity = node_activity.json()
+        assert len(activity) == 1
+        assert activity[0]["record"]["id"] == keep_a.id
+
+        task_feed = client.get(f"/api/task/{keep_a.id}/feed")
+        assert task_feed.status_code == 200
+        task_events = task_feed.json()
+        assert len(task_events) == 2
+        assert all(item["task_id"] == keep_a.id for item in task_events)
     finally:
         _close_node(node)

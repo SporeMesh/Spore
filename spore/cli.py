@@ -6,6 +6,7 @@ import asyncio
 import importlib.metadata
 import logging
 import logging.handlers
+import os
 import signal
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import click
 from rich.console import Console
 
 from .node import SPORE_DIR, NodeConfig, SporeNode
+from .operator import AutoOperator
 from .record import generate_keypair
 
 log = logging.getLogger(__name__)
@@ -53,9 +55,17 @@ def cli():
 
 
 @cli.command()
-def init():
+@click.option(
+    "--auto-update/--no-auto-update",
+    default=True,
+    help="Enable or disable automatic release checks in the generated config",
+)
+def init(auto_update: bool):
     """Initialize a new Spore node (generate identity, create directories)."""
     node_id = ensure_initialized()
+    config = NodeConfig.load()
+    config.auto_update = auto_update
+    config.save()
     console.print(f"Node ready. ID: [cyan]{node_id[:16]}...[/]")
     console.print(f"Data directory: [dim]{SPORE_DIR}[/]")
 
@@ -64,6 +74,12 @@ def init():
 @click.option("--port", "-p", default=7470, help="Gossip listen port")
 @click.option("--web-port", "-w", default=8470, help="Explorer web UI port")
 @click.option("--peer", "-c", multiple=True, help="Peer address (host:port)")
+@click.option("--task", "task_id", default="", help="Task ID to follow")
+@click.option(
+    "--auto-update/--no-auto-update",
+    default=None,
+    help="Enable or disable the built-in auto-operator for this run",
+)
 @click.option("--no-train", is_flag=True, help="Sync-only mode (no experiment runner)")
 @click.option(
     "--verify-only",
@@ -89,6 +105,8 @@ def run(
     port: int,
     web_port: int,
     peer: tuple[str, ...],
+    task_id: str,
+    auto_update: bool | None,
     no_train: bool,
     verify_only: bool,
     genesis: bool,
@@ -110,12 +128,15 @@ def run(
     config.port = port
     if peer:
         config.peer = list(peer)
+    if task_id:
+        config.task_id = task_id
+    if auto_update is not None:
+        config.auto_update = auto_update
+    config.save(data_path / "config.toml")
 
     node = SporeNode(config)
 
     # Set resource level for train.py subprocess
-    import os
-
     os.environ["SPORE_RESOURCE"] = str(resource)
 
     # Genesis: prepare everything synchronously before starting (no peers to sync with)
@@ -144,7 +165,7 @@ def run(
             mode = f"research ({llm_cfg.provider}/{llm_cfg.get_model()})"
             should_train = True
 
-    _print_banner(node, port, config.peer, mode, resource)
+    _print_banner(node, port, config.peer, mode, resource, config.task_id or "auto")
 
     async def _run():
         import uvicorn
@@ -152,8 +173,10 @@ def run(
         from .explorer import create_app
 
         shutdown = asyncio.Event()
+        restart_requested = asyncio.Event()
         explorer_task: asyncio.Task | None = None
         loop_task: asyncio.Task | None = None
+        operator_task: asyncio.Task | None = None
         server: uvicorn.Server | None = None
 
         def _request_shutdown():
@@ -242,11 +265,38 @@ def run(
 
                 loop = ExperimentLoop(node, Path.cwd())
                 loop_task = asyncio.create_task(loop.run())
+            try:
+                current_version = importlib.metadata.version("sporemesh")
+            except importlib.metadata.PackageNotFoundError:
+                from . import __version__ as current_version
+
+            operator = AutoOperator(
+                manifest_url=config.update_manifest_url,
+                current_version=current_version,
+                interval_sec=config.update_interval_sec,
+                enabled=config.auto_update,
+                workdir=Path.cwd(),
+            )
+
+            async def _on_update(_version: str):
+                console.print("  [dim]Auto-update applied. Restarting node...[/]")
+                restart_requested.set()
+                shutdown.set()
+
+            if config.auto_update:
+                operator_task = asyncio.create_task(operator.run_loop(_on_update))
             await shutdown.wait()
+            return restart_requested.is_set()
         except asyncio.CancelledError:
-            pass
+            return False
         finally:
             shutdown.set()
+            if operator_task:
+                operator_task.cancel()
+                try:
+                    await operator_task
+                except asyncio.CancelledError:
+                    pass
             if loop_task:
                 loop_task.cancel()
                 try:
@@ -263,12 +313,15 @@ def run(
                     pass
             await node.stop()
 
+    restart = False
     try:
-        asyncio.run(_run())
+        restart = asyncio.run(_run())
     except KeyboardInterrupt:
         console.print("\nShutting down.")
     except OSError as e:
         _handle_port_error(e, port)
+    if restart:
+        os.execv(sys.executable, [sys.executable, "-m", "spore.cli", *sys.argv[1:]])
 
 
 @cli.command()
@@ -396,7 +449,8 @@ def profile_set(
 @click.option("--port", "-p", default=7470, help="Gossip port")
 @click.option("--web-port", "-w", default=8470, help="Web UI port")
 @click.option("--peer", "-c", multiple=True, help="Peer address (host:port)")
-def explorer(port: int, web_port: int, peer: tuple[str, ...]):
+@click.option("--task", "task_id", default="", help="Task ID to display by default")
+def explorer(port: int, web_port: int, peer: tuple[str, ...], task_id: str):
     """Launch the Spore Explorer web UI with a gossip server.
 
     If a daemon is already running, the explorer auto-attaches to it
@@ -412,6 +466,8 @@ def explorer(port: int, web_port: int, peer: tuple[str, ...]):
     config.port = port
     if peer:
         config.peer = list(peer)
+    if task_id:
+        config.task_id = task_id
 
     # Find an available web port
     actual_web_port = _find_available_port(web_port)
@@ -612,7 +668,12 @@ def _configure_logging():
 
 
 def _print_banner(
-    node: SporeNode, port: int, peer: list[str], mode: str, resource: int = 100
+    node: SporeNode,
+    port: int,
+    peer: list[str],
+    mode: str,
+    resource: int = 100,
+    task_id: str = "auto",
 ):
     from rich.panel import Panel
     from rich.table import Table
@@ -628,6 +689,7 @@ def _print_banner(
     grid.add_row("Node", f"[cyan]{node.node_id[:16]}...[/]")
     grid.add_row("Port", str(port))
     grid.add_row("Peer", f"{len(peer)} configured")
+    grid.add_row("Task", task_id if task_id == "auto" else f"{task_id[:16]}...")
     grid.add_row("Resource", f"{resource}%")
     grid.add_row("Mode", f"[bold]{mode}[/]")
 
@@ -672,10 +734,12 @@ def _handle_port_error(e: OSError, port: int):
 from .daemon import register_command as _register_daemon
 from .llm import register_command as _register_llm
 from .query import register_command as _register_query
+from .task_cli import register_command as _register_task
 
 _register_query(cli)
 _register_daemon(cli)
 _register_llm(cli)
+_register_task(cli)
 
 
 def main():

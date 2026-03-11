@@ -1,54 +1,68 @@
 # Spore
 
-> Decentralized AI research protocol. BitTorrent for ML experiments.
+> Repository index for the current task-aware protocol.
 
-**Repo**: [SporeMesh/Spore](https://github.com/SporeMesh/Spore)  
-**Status**: active development, live multi-node operation
+## What Spore Is
 
-## What Spore Does
+Spore is a decentralized research mesh for signed, replayable experiments.
 
-Spore connects autonomous `train.py` researchers into a mesh:
+The core unit is an experiment record plus its exact `train.py` snapshot. Nodes gossip experiments, task manifests, control events, and artifacts over a raw TCP mesh.
 
-- nodes run short ML experiments
-- results are published as signed immutable records
-- peers sync a shared DAG of experiments
-- compatible nodes rerun each other for verification
-- reputation updates propagate across the network
+## Current Architecture
 
-This is distributed research, not distributed training.
-
-## Current Surface Area
-
-- Experiment DAG in SQLite
-- TCP gossip with PEX, experiment sync, signed control-event replay, and artifact transfer
-- Frontier-aware autonomous experiment loop
-- Signed spot-check, challenge, dispute, and propagated reputation events
-- Signed node profiles for display names and donation metadata
-- Explorer UI with graph, activity, frontier, and leaderboard
-- Research, sync-only, and verifier-only node modes
+- `task` is the namespace above experiments
+- `experiment` is one signed step within a task
+- `control event` is a signed challenge, verification, or dispute record
+- `artifact` is the exact code snapshot referenced by `code_cid`
+- `profile` is signed display metadata for the explorer
 
 ## Start Here
 
-- [README.md](README.md): operator and developer guide
-- [spec/protocol.md](spec/protocol.md): protocol and wire semantics
-- [program.md](program.md): live runtime doctrine, safety rules, and operating recommendations
+- [README.md](README.md): install, run modes, operator notes, launch setup
+- [program.md](program.md): runtime doctrine and operating rules
+- [spec/protocol.md](spec/protocol.md): record, task, sync, and wire semantics
 
-## Key Files
+## Important Files
 
-- `spore/node.py`: node orchestration
-- `spore/gossip.py`: message transport and rebroadcast
-- `spore/record.py`: signed experiment record
-- `spore/profile.py`: signed node profile metadata
-- `spore/challenge.py`: verification/challenge coordinator
-- `spore/reputation.py`: reputation store and event dedupe
-- `spore/loop.py`: experiment loop and proposal validation
-- `spore/runner.py`: training subprocess execution
-- `spore/explorer/server.py`: explorer API
+- `spore/record.py`
+  Signed experiment record and CID logic.
+- `spore/task.py`
+  Signed task manifest.
+- `spore/graph.py`
+  SQLite DAG with task-aware frontier and backfill logic.
+- `spore/task_store.py`
+  Durable task metadata and manifest store.
+- `spore/control.py`
+  Signed control-plane event type.
+- `spore/control_store.py`
+  Durable replay store for signed control events.
+- `spore/gossip.py`
+  TCP transport for experiments, tasks, control events, PEX, and artifacts.
+- `spore/node.py`
+  Node orchestration, sync startup, task selection, and local persistence.
+- `spore/loop.py`
+  Research loop.
+- `spore/challenge.py`
+  Verification, challenge, and dispute flow.
+- `spore/operator.py`
+  Auto-update operator.
+- `spore/explorer/server.py`
+  Explorer app wiring.
+- `spore/explorer/routes.py`
+  Task-aware explorer API.
 
-## Recommended Topology
+## Product Surface
 
-- one or more research nodes
-- at least one verifier-only node for busy or fragile GPUs
-- at least two compatible nodes per hardware class you want to verify
+The product is intentionally simpler now:
 
-Without same-class peers, a node can publish but cannot be independently verified.
+- explorer emphasizes tasks, frontier, and activity
+- verification and disputes still exist
+- global reputation is not the main UX
+
+That keeps launch centered on:
+
+- tasks
+- experiments
+- verification
+- artifacts
+- sync

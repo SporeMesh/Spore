@@ -107,11 +107,13 @@ class ChallengeCoordinator:
             payload = {
                 "event_id": f"verification:{record.id}:{self.node_id}",
                 "experiment_id": record.id,
+                "task_id": record.task_id,
                 "verified_node_id": record.node_id,
                 "verifier_id": self.node_id,
                 "verifier_gpu": self.gpu_model,
                 "verifier_bpb": result.val_bpb,
-                "is_frontier": record.id in {r.id for r in self._node.graph.frontier()},
+                "is_frontier": record.id
+                in {r.id for r in self._node.graph.frontier_by_task(record.task_id)},
             }
             self.on_verification(payload)
             signed = self._node.make_control_event(MessageType.VERIFICATION, payload)
@@ -138,6 +140,7 @@ class ChallengeCoordinator:
         payload = {
             "event_id": f"challenge:{record.id}:{self.node_id}",
             "experiment_id": record.id,
+            "task_id": record.task_id,
             "challenger_id": self.node_id,
             "challenger_bpb": result.val_bpb,
             "challenger_gpu": self.gpu_model,
@@ -215,6 +218,7 @@ class ChallengeCoordinator:
                 f"challenge_response:{record.id}:{challenge['challenger_id']}:{self.node_id}"
             ),
             "experiment_id": record.id,
+            "task_id": record.task_id,
             "challenger_id": challenge["challenger_id"],
             "verifier_id": self.node_id,
             "verifier_bpb": result.val_bpb,
@@ -323,6 +327,7 @@ class ChallengeCoordinator:
             payload = {
                 "event_id": f"dispute:{dispute.experiment_id}:{dispute.challenger_id}",
                 "experiment_id": dispute.experiment_id,
+                "task_id": pending.experiment.task_id,
                 "original_node_id": pending.experiment.node_id,
                 "challenger_id": dispute.challenger_id,
                 "challenger_bpb": dispute.challenger_bpb,

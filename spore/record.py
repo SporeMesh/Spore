@@ -56,6 +56,7 @@ class ExperimentRecord:
 
     # Node identity
     node_id: str  # Ed25519 public key (hex)
+    task_id: str = ""  # Task namespace (signed for v2+ records)
     timestamp: int = field(default_factory=lambda: int(time.time()))
 
     # Computed after creation
@@ -73,6 +74,8 @@ class ExperimentRecord:
         d = asdict(self)
         d.pop("id")
         d.pop("signature")
+        if self.version < 2:
+            d.pop("task_id", None)
         if isinstance(d.get("status"), Status):
             d["status"] = d["status"].value
         return d

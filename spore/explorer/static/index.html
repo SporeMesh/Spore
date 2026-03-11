@@ -25,11 +25,16 @@
 <div class="filter-bar">
   <div class="stats">
     <div>experiments <span class="val" id="stat-total">0</span></div>
+    <div>tasks <span class="val" id="stat-tasks">0</span></div>
     <div>nodes <span class="val" id="stat-nodes">0</span></div>
     <div>frontier <span class="val" id="stat-frontier">0</span></div>
     <div>best <span class="val" id="stat-best">—</span></div>
     <div>peer <span class="val" id="stat-peer">0</span></div>
   </div>
+  <label>
+    task
+    <select id="task-select"></select>
+  </label>
   <button class="filter-btn active" data-filter="all">all</button>
   <button class="filter-btn" data-filter="keep">keep</button>
   <button class="filter-btn" data-filter="discard">discard</button>
@@ -57,9 +62,9 @@
 
 <div class="tab-bar">
   <button class="active" data-tab="frontier-tab">Frontier</button>
+  <button data-tab="tasks-tab">Tasks</button>
   <button data-tab="nodes-tab">Nodes</button>
   <button data-tab="activity-tab">Activity</button>
-  <button data-tab="leaderboard-tab">Leaderboard</button>
 </div>
 
 <div id="frontier-tab" class="tab-content active">
@@ -67,6 +72,16 @@
     <thead><tr>
       <th>CID</th><th>val_bpb</th><th>depth</th><th>GPU</th>
       <th>steps</th><th>params</th><th>description</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div id="tasks-tab" class="tab-content">
+  <table id="task-table">
+    <thead><tr>
+      <th>Task</th><th>Type</th><th>Experiments</th><th>Frontier</th>
+      <th>Best</th><th>Participants</th><th>Updated</th>
     </tr></thead>
     <tbody></tbody>
   </table>
@@ -106,14 +121,13 @@
       <select id="node-sort-filter">
         <option value="recent">recent</option>
         <option value="published">published</option>
-        <option value="score">score</option>
         <option value="frontier">frontier</option>
       </select>
     </label>
   </div>
   <table id="node-table">
     <thead><tr>
-      <th>Node</th><th>Role</th><th>Score</th><th>Experiments</th>
+      <th>Node</th><th>Role</th><th>Tasks</th><th>Experiments</th>
       <th>Keep</th><th>Frontier</th><th>GPU</th><th>Last Seen</th>
     </tr></thead>
     <tbody></tbody>
@@ -122,16 +136,6 @@
 
 <div id="activity-tab" class="tab-content">
   <div id="activity-feed"></div>
-</div>
-
-<div id="leaderboard-tab" class="tab-content">
-  <table id="leaderboard-table">
-    <thead><tr>
-      <th>#</th><th>Node</th><th>Score</th>
-      <th>Published</th><th>Verified</th><th>Disputes Won</th><th>Disputes Lost</th>
-    </tr></thead>
-    <tbody></tbody>
-  </table>
 </div>
 
 <script type="module" src="/static/app.js"></script>

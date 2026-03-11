@@ -334,6 +334,7 @@ class ExperimentRunner:
         dataset_cid: str,
         prepare_cid: str,
         node_id: str,
+        task_id: str = "",
         gpu_model: str = "unknown",
         cuda_version: str = "unknown",
         torch_version: str = "unknown",
@@ -353,6 +354,7 @@ class ExperimentRunner:
         return ExperimentRecord(
             parent=parent.id if parent else None,
             depth=(parent.depth + 1) if parent else 0,
+            task_id=task_id,
             code_cid=self.get_code_cid(),
             diff=diff,
             dataset_cid=dataset_cid,
@@ -370,6 +372,7 @@ class ExperimentRunner:
             cuda_version=cuda_version,
             torch_version=torch_version,
             node_id=node_id,
+            version=2 if task_id else 1,
         )
 
     def _parse_output(self, output: str) -> TrainResult:

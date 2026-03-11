@@ -12,9 +12,13 @@ MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 class MessageType:
     EXPERIMENT = "experiment"
+    TASK = "task"
     SYNC_REQUEST = "sync_request"
     CONTROL_SYNC_REQUEST = "control_sync_request"
+    TASK_SYNC_REQUEST = "task_sync_request"
     SYNC_RESPONSE = "sync_response"
+    CONTROL_SYNC_RESPONSE = "control_sync_response"
+    TASK_SYNC_RESPONSE = "task_sync_response"
     PING = "ping"
     PONG = "pong"
     PEX_REQUEST = "pex_request"

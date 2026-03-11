@@ -206,10 +206,10 @@ class TestGossipServer:
         await client.connect_to_peer("127.0.0.1", 17480)
         await asyncio.sleep(0.1)
 
-        await client.request_sync("127.0.0.1:17480", since_timestamp=0)
-        await asyncio.sleep(0.3)
+        response = await client.request_sync("127.0.0.1:17480", since_timestamp=0)
 
         assert len(received) == 2
+        assert response == {"since": 0, "count": 2}
 
         await server.stop()
         await client.stop()
@@ -254,10 +254,12 @@ class TestGossipServer:
         await client.connect_to_peer("127.0.0.1", 17482)
         await asyncio.sleep(0.1)
 
-        await client.request_control_sync("127.0.0.1:17482", since_timestamp=100)
-        await asyncio.sleep(0.2)
+        response = await client.request_control_sync(
+            "127.0.0.1:17482", since_timestamp=100
+        )
 
         assert received == ["verification:1"]
+        assert response == {"since": 100, "count": 1}
 
         await server.stop()
         await client.stop()
@@ -345,3 +347,28 @@ class TestGossipServer:
 
         await server.stop()
         await client.stop()
+
+    @pytest.mark.asyncio
+    async def test_pex_does_not_advertise_inbound_ephemeral_ports(self):
+        server_b = GossipServer(host="127.0.0.1", port=17486)
+        server_a = GossipServer(host="127.0.0.1", port=17487)
+        server_c = GossipServer(host="127.0.0.1", port=17488)
+        await server_b.start()
+        await server_a.start()
+        await server_c.start()
+
+        await server_a.connect_to_peer("127.0.0.1", 17486)
+        await server_c.connect_to_peer("127.0.0.1", 17487)
+        await asyncio.sleep(0.1)
+
+        await server_c.request_pex("127.0.0.1:17487")
+        await asyncio.sleep(0.2)
+
+        assert "127.0.0.1:17486" in server_c.peers
+        assert all(
+            addr in {"127.0.0.1:17486", "127.0.0.1:17487"} for addr in server_c.peers
+        )
+
+        await server_c.stop()
+        await server_a.stop()
+        await server_b.stop()

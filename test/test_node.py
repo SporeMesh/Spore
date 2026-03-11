@@ -43,6 +43,26 @@ def test_remote_experiment_records_publish_without_storing_fake_code(tmp_path, k
     node.reputation.close()
 
 
+def test_remote_parentless_experiment_creates_new_task_when_root_exists(
+    tmp_path, keypair, second_keypair
+):
+    node = SporeNode(NodeConfig(port=0, data_dir=str(tmp_path)))
+    genesis = make_record(keypair, description="genesis")
+    node._on_remote_experiment(genesis)
+    competing_root = make_record(second_keypair, description="competing root")
+
+    node._on_remote_experiment(competing_root)
+
+    assert node.graph.count() == 2
+    assert node.graph.get(genesis.id).task_id == genesis.id
+    assert node.graph.get(competing_root.id).task_id == competing_root.id
+
+    node.graph.close()
+    node.profile.close()
+    node.control.close()
+    node.reputation.close()
+
+
 def test_remote_experiment_prefetches_artifact_from_source(
     tmp_path, keypair, monkeypatch
 ):
@@ -137,6 +157,25 @@ async def test_fetch_code_retries_newly_discovered_peers(tmp_path, monkeypatch):
     node.reputation.close()
 
 
+@pytest.mark.asyncio
+async def test_publish_parentless_experiment_rejected_when_task_root_exists(
+    tmp_path, keypair
+):
+    node = SporeNode(NodeConfig(port=0, data_dir=str(tmp_path)))
+    genesis = make_record(keypair, description="genesis")
+    node._on_remote_experiment(genesis)
+    node.active_task_id = genesis.id
+    record = make_record(keypair, description="should fail")
+
+    with pytest.raises(ValueError, match="task lineage rejected"):
+        await node.publish_experiment(record, code="print('hello')\n")
+
+    node.graph.close()
+    node.profile.close()
+    node.control.close()
+    node.reputation.close()
+
+
 def test_make_control_event_persists_signed_event(tmp_path):
     node = SporeNode(NodeConfig(port=0, data_dir=str(tmp_path)))
 
@@ -172,6 +211,8 @@ async def test_control_sync_replays_verified_state(tmp_path, keypair):
         )
     )
     record = make_record(keypair, val_bpb=0.95, description="sync me")
+    record.peak_vram_mb = float(record.peak_vram_mb)
+    record.sign(keypair[0])
 
     await node_a.publish_experiment(record, code="print('hello')\n")
     verification = {

@@ -1,5 +1,6 @@
 """Tests for experiment loop behavior and metadata extraction."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -15,12 +16,15 @@ from spore.loop import (
 async def test_apply_frontier_code_waits_for_delayed_peer_discovery(monkeypatch):
     applied: list[str] = []
     loop = ExperimentLoop.__new__(ExperimentLoop)
-    best = SimpleNamespace(id="abc12345" * 8, code_cid="codecid", val_bpb=1.1)
+    best = SimpleNamespace(
+        id="abc12345" * 8, code_cid="codecid", val_bpb=1.1, task_id="task-1"
+    )
     loop.node = SimpleNamespace(
-        graph=SimpleNamespace(best=lambda: best),
+        graph=SimpleNamespace(best_by_task=lambda task_id: best),
         store=SimpleNamespace(get=lambda cid: None),
         gossip=SimpleNamespace(peers={"bootstrap:7470": object()}),
         fetch_code=None,
+        active_task_id="task-1",
     )
     loop.runner = SimpleNamespace(apply_code=lambda code: applied.append(code))
 
@@ -44,6 +48,49 @@ async def test_apply_frontier_code_waits_for_delayed_peer_discovery(monkeypatch)
     assert applied_ok is True
     assert applied == ["print('frontier')\n"]
     assert attempts["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_run_retries_frontier_fetch_without_running_baseline(monkeypatch):
+    loop = ExperimentLoop.__new__(ExperimentLoop)
+    state = {"attempts": 0, "baseline_called": False, "run_one_called": False}
+    loop.node = SimpleNamespace(
+        graph=SimpleNamespace(count=lambda: 5),
+        config=SimpleNamespace(task_id="task-1"),
+        active_task_id="task-1",
+    )
+
+    async def fake_await_peer_sync():
+        return None
+
+    async def fake_apply_frontier_code():
+        state["attempts"] += 1
+        return state["attempts"] >= 2
+
+    async def fake_run_baseline():
+        state["baseline_called"] = True
+        return True
+
+    async def fake_run_one():
+        state["run_one_called"] = True
+        raise asyncio.CancelledError
+
+    async def fake_sleep(_seconds: float):
+        return None
+
+    loop._await_peer_sync = fake_await_peer_sync
+    loop._apply_frontier_code = fake_apply_frontier_code
+    loop._run_baseline = fake_run_baseline
+    loop._run_one = fake_run_one
+
+    monkeypatch.setattr("spore.loop.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await loop.run()
+
+    assert state["attempts"] == 2
+    assert state["baseline_called"] is False
+    assert state["run_one_called"] is True
 
 
 class TestExtractMetadata:

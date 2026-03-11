@@ -1,11 +1,4 @@
-"""Spore node — ties together graph, storage, gossip, and the experiment loop.
-
-A node:
-1. Maintains a local research graph (SQLite DAG)
-2. Runs a gossip server to exchange experiments with peers
-3. Optionally runs an experiment loop (wrapper around autoresearch)
-4. Stores artifacts in content-addressed storage
-"""
+"""Spore node orchestration."""
 
 from __future__ import annotations
 
@@ -29,6 +22,8 @@ from .graph import ResearchGraph
 from .profile import NodeProfile, NodeProfileStore
 from .record import ExperimentRecord, generate_keypair
 from .store import ArtifactStore
+from .task import TaskManifest
+from .task_store import TaskStore
 from .training_runtime import TrainingRuntime
 from .verify import ReputationStore, Verifier
 
@@ -44,61 +39,78 @@ KNOWN_PEER_FILE = "known_peer"
 class NodeConfig:
     host: str = "0.0.0.0"
     port: int = DEFAULT_PORT
-    peer: list[str] = field(default_factory=list)  # ["host:port", ...]
+    peer: list[str] = field(default_factory=list)
+    task_id: str = ""
+    auto_update: bool = True
+    update_interval_sec: int = 21600
+    update_manifest_url: str = (
+        "https://raw.githubusercontent.com/SporeMesh/Spore/main/release-manifest.json"
+    )
     data_dir: str = str(SPORE_DIR)
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> NodeConfig:
-        if path is None:
-            path = SPORE_DIR / "config.toml"
-        path = Path(path)
+        path = Path(path or (SPORE_DIR / "config.toml"))
         if not path.exists():
             return cls()
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
+        with open(path, "rb") as handle:
+            data = tomllib.load(handle)
         return cls(
             host=data.get("host", "0.0.0.0"),
             port=data.get("port", DEFAULT_PORT),
             peer=data.get("peer", []),
+            task_id=data.get("task_id", ""),
+            auto_update=data.get("auto_update", True),
+            update_interval_sec=data.get("update_interval_sec", 21600),
+            update_manifest_url=data.get(
+                "update_manifest_url",
+                "https://raw.githubusercontent.com/SporeMesh/Spore/main/release-manifest.json",
+            ),
             data_dir=data.get("data_dir", str(SPORE_DIR)),
         )
 
     def save(self, path: str | Path | None = None):
-        if path is None:
-            path = Path(self.data_dir) / "config.toml"
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [
-            f'host = "{self.host}"',
-            f"port = {self.port}",
-            f'data_dir = "{self.data_dir}"',
-            f"peer = {self.peer!r}",
-        ]
-        path.write_text("\n".join(lines) + "\n")
+        target = Path(path or (Path(self.data_dir) / "config.toml"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "\n".join(
+                [
+                    f'host = "{self.host}"',
+                    f"port = {self.port}",
+                    f"peer = {self.peer!r}",
+                    f'task_id = "{self.task_id}"',
+                    f"auto_update = {str(self.auto_update).lower()}",
+                    f"update_interval_sec = {self.update_interval_sec}",
+                    f'update_manifest_url = "{self.update_manifest_url}"',
+                    f'data_dir = "{self.data_dir}"',
+                ]
+            )
+            + "\n"
+        )
 
 
 class SporeNode:
     def __init__(self, config: NodeConfig | None = None):
         self.config = config or NodeConfig.load()
         self.data_dir = Path(self.config.data_dir).expanduser()
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "db").mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "artifact").mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "identity").mkdir(parents=True, exist_ok=True)
+        for name in ("db", "artifact", "identity"):
+            (self.data_dir / name).mkdir(parents=True, exist_ok=True)
 
-        # Load or generate identity
         self.signing_key, self.node_id = self._load_identity()
-
-        # Core components
         self.graph = ResearchGraph(self.data_dir / "db" / "graph.sqlite")
         self.store = ArtifactStore(self.data_dir / "artifact")
         self.profile = NodeProfileStore(self.data_dir / "db" / "profile.sqlite")
         self.control = ControlStore(self.data_dir / "db" / "control.sqlite")
+        self.task = TaskStore(self.data_dir / "db" / "task.sqlite")
         self.reputation = ReputationStore(self.data_dir / "db" / "reputation.sqlite")
-        self.reputation.backfill_published(self.graph.all_records())
         self.training = TrainingRuntime()
         self.artifact = ArtifactSync()
-        # Verification
+        self.workspace: Path | None = None
+
+        self._backfill_tasks()
+        self.reputation.backfill_published(self.graph.all_records())
+        self.active_task_id = self.config.task_id or self._auto_select_task()
+
         self.verifier = Verifier(self.reputation)
         self.challenger = ChallengeCoordinator(
             self.verifier,
@@ -106,14 +118,15 @@ class SporeNode:
             gpu_model=self._detect_gpu(),
         )
         self.challenger.set_node(self)
-        self.workspace: Path | None = None  # Set by experiment loop if training
 
         self.gossip = GossipServer(
             host=self.config.host,
             port=self.config.port,
             on_experiment=self._on_remote_experiment,
+            on_task=self._on_remote_task,
             on_sync_request=self._on_sync_request,
             on_control_sync_request=self._on_control_sync_request,
+            on_task_sync_request=self._on_task_sync_request,
             on_new_peer=self._save_peer,
             on_control_event=self._on_remote_control_event,
             on_challenge=self.challenger.on_challenge,
@@ -123,121 +136,91 @@ class SporeNode:
             on_profile=self._on_remote_profile,
             on_code_request=self._on_code_request,
         )
-        self._listener: list[Callable[[ExperimentRecord], None]] = []
+        self._listeners: list[Callable[[ExperimentRecord], None]] = []
 
     def add_listener(self, callback: Callable[[ExperimentRecord], None]):
-        """Register a callback for new experiment events."""
-        self._listener.append(callback)
+        self._listeners.append(callback)
 
-    @staticmethod
-    def _detect_gpu() -> str:
-        """Detect GPU model for verification matching."""
-        try:
-            import torch
+    def get_profile(self, node_id: str) -> NodeProfile | None:
+        return self.profile.get(node_id)
 
-            if torch.cuda.is_available():
-                return normalize_gpu_model(torch.cuda.get_device_name(0))
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                return "APPLE_MPS"
-        except ImportError:
-            pass
-        return "CPU"
+    def get_task(self, task_id: str) -> dict | None:
+        return self.task.get(task_id)
 
-    def _load_identity(self) -> tuple[SigningKey, str]:
-        """Load existing keypair or generate a new one."""
-        key_path = self.data_dir / "identity" / "private_key"
-        if key_path.exists():
-            sk_hex = key_path.read_text().strip()
-            sk = SigningKey(bytes.fromhex(sk_hex))
-            pk_hex = sk.verify_key.encode(encoder=HexEncoder).decode("ascii")
-            return sk, pk_hex
+    def all_tasks(self) -> list[dict]:
+        return self.task.all()
 
-        sk, pk_hex = generate_keypair()
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-        key_path.write_text(sk.encode(encoder=HexEncoder).decode("ascii"))
-        # Store public key separately for easy access
-        (self.data_dir / "identity" / "node_id").write_text(pk_hex)
-        return sk, pk_hex
+    def set_active_task(self, task_id: str):
+        self.active_task_id = task_id
+        self.config.task_id = task_id
+        self.config.save(self.data_dir / "config.toml")
 
-    def _on_remote_experiment(
-        self, record: ExperimentRecord, source_addr: str | None = None
-    ):
-        """Called when a remote experiment arrives via gossip."""
-        inserted = self.graph.insert(record)
-        if inserted:
-            self.reputation.record_published(record.node_id, record)
-            log.info(
-                "Received experiment %s (val_bpb=%.6f, %s) from %s",
-                record.id[:8],
-                record.val_bpb,
-                record.status.value,
-                record.node_id[:8],
-            )
-            if source_addr and self.store.get(record.code_cid) is None:
-                self.artifact.prefetch(
-                    self, record.code_cid, preferred_peer=source_addr
-                )
-            # Spot-check if we have a workspace
-            if self.workspace:
-                self.challenger.on_experiment_received(record)
+    def create_task(
+        self,
+        *,
+        name: str,
+        description: str,
+        task_type: str,
+        artifact_type: str,
+        metric: str,
+        goal: str,
+        base_code_cid: str,
+        prepare_cid: str,
+        dataset_cid: str,
+        time_budget: int,
+    ) -> TaskManifest:
+        manifest = TaskManifest(
+            name=name,
+            description=description,
+            task_type=task_type,
+            artifact_type=artifact_type,
+            metric=metric,
+            goal=goal,
+            base_code_cid=base_code_cid,
+            prepare_cid=prepare_cid,
+            dataset_cid=dataset_cid,
+            time_budget=time_budget,
+            created_by=self.node_id,
+        )
+        manifest.sign(self.signing_key)
+        self.task.upsert_manifest(manifest)
+        self.set_active_task(manifest.task_id)
+        return manifest
 
-            for cb in self._listener:
-                try:
-                    cb(record)
-                except Exception:
-                    log.exception("Listener callback failed")
-
-    def _on_sync_request(self, since_timestamp: int) -> list[ExperimentRecord]:
-        """Called when a peer requests sync. Returns records after timestamp."""
-        all_records = self.graph.all_records()
-        return [r for r in all_records if r.timestamp >= since_timestamp]
-
-    def _on_control_sync_request(
-        self, since_timestamp: int
-    ) -> list[SignedControlEvent]:
-        """Called when a peer requests signed control-event replay."""
-        return self.control.list_since(since_timestamp)
-
-    def _on_remote_control_event(self, event: SignedControlEvent):
-        """Persist a remote signed control event for replay on future sync."""
-        self.control.store(event)
-
-    def _on_remote_profile(self, profile: NodeProfile):
-        """Called when a remote profile arrives via gossip."""
-        inserted = self.profile.upsert(profile)
-        if inserted:
-            log.info(
-                "Received profile for %s (%s)",
-                profile.node_id[:8],
-                profile.display_name or "unnamed",
-            )
+    async def publish_task(self, manifest: TaskManifest):
+        self.task.upsert_manifest(manifest)
+        await self.gossip.broadcast_task(manifest)
 
     async def publish_experiment(
         self, record: ExperimentRecord, code: str | None = None
     ):
-        """Sign, store, and broadcast an experiment."""
         record.node_id = self.node_id
+        record.task_id = self._normalize_task_id(record, local_publish=True)
+        record.version = max(record.version, 2) if record.task_id else record.version
         record.sign(self.signing_key)
+        if not self._accept_lineage(record, local_publish=True):
+            raise ValueError("task lineage rejected")
         self.graph.insert(record)
+        self._register_task_for_record(record)
         self.reputation.record_published(record.node_id, record)
-        # Store full code snapshot for verification
         if code:
             self.store.put(code.encode("utf-8"))
         await self.gossip.broadcast_experiment(record)
         log.info(
-            "Published experiment %s (val_bpb=%.6f, %s)",
+            "Published experiment %s task=%s val_bpb=%.6f %s",
             record.id[:8],
+            record.task_id[:8],
             record.val_bpb,
             record.status.value,
         )
-        for cb in self._listener:
-            try:
-                cb(record)
-            except Exception:
-                log.exception("Listener callback failed")
+        self._notify_listeners(record)
 
-    def get_profile(self, node_id: str) -> NodeProfile | None:
-        return self.profile.get(node_id)
+    async def publish_profile(self, profile: NodeProfile | None = None):
+        profile = profile or self.profile.get(self.node_id)
+        if profile is None:
+            return
+        self.profile.upsert(profile)
+        await self.gossip.broadcast_profile(profile)
 
     def update_local_profile(
         self,
@@ -260,97 +243,213 @@ class SporeNode:
         self.profile.upsert(profile)
         return profile
 
-    async def publish_profile(self, profile: NodeProfile | None = None):
-        profile = profile or self.profile.get(self.node_id)
-        if profile is None:
-            return
-        self.profile.upsert(profile)
-        await self.gossip.broadcast_profile(profile)
-        log.info(
-            "Published profile for %s (%s)",
-            profile.node_id[:8],
-            profile.display_name or "unnamed",
-        )
-
     def make_control_event(self, msg_type: str, payload: dict) -> dict:
-        """Create and sign a control-plane event payload."""
         event = SignedControlEvent(
-            type=msg_type,
-            payload=dict(payload),
-            node_id=self.node_id,
+            type=msg_type, payload=dict(payload), node_id=self.node_id
         )
         event.sign(self.signing_key)
         self.control.store(event)
         return event.to_dict()
 
-    def _on_code_request(self, code_cid: str) -> bytes | None:
-        """Called when a peer requests code by CID."""
-        return self.store.get(code_cid)
-
     async def fetch_code(self, code_cid: str) -> bytes | None:
-        """Try to fetch code by CID from any connected peer."""
         return await self.artifact.fetch(self, code_cid)
 
     async def start(self, *, skip_peer: bool = False):
-        """Start the gossip server and connect to peers."""
-        (self.data_dir / "db").mkdir(parents=True, exist_ok=True)
         await self.gossip.start()
-
-        if skip_peer:
-            return
-
-        # Build peer list: configured + persisted + bootstrap (deduplicated)
-        all_peer = list(
-            dict.fromkeys(
-                self.config.peer
-                + self._load_known_peer()
-                + (BOOTSTRAP_PEER if not self.config.peer else [])
+        if not skip_peer:
+            peers = list(
+                dict.fromkeys(
+                    self.config.peer
+                    + self._load_known_peer()
+                    + (BOOTSTRAP_PEER if not self.config.peer else [])
+                )
             )
-        )
-
-        for peer_addr in all_peer:
-            parts = peer_addr.split(":")
-            if len(parts) == 2:
-                host, port = parts[0], int(parts[1])
-                connected = await self.gossip.connect_to_peer(host, port)
-                if connected:
+            for peer_addr in peers:
+                host, _, port_str = peer_addr.partition(":")
+                if not port_str:
+                    continue
+                if await self.gossip.connect_to_peer(host, int(port_str)):
                     self._save_peer(peer_addr)
                     await self.gossip.request_pex(peer_addr)
                     await self.gossip.request_sync(peer_addr)
                     await self.gossip.request_control_sync(
                         peer_addr, since_timestamp=self.control.latest_timestamp()
                     )
+                    await self.gossip.request_task_sync(
+                        peer_addr, since_timestamp=self.task.latest_timestamp()
+                    )
+        for manifest in self.task.manifests():
+            await self.gossip.broadcast_task(manifest)
         if self.profile.get(self.node_id) is not None:
             await self.publish_profile()
+        self.active_task_id = self.config.task_id or self._auto_select_task()
 
     async def stop(self):
         await self.gossip.stop()
         self.graph.close()
         self.profile.close()
         self.control.close()
+        self.task.close()
         self.reputation.close()
 
-    def _load_known_peer(self) -> list[str]:
-        """Load previously-seen peers from disk."""
-        path = self.data_dir / KNOWN_PEER_FILE
-        if not path.exists():
-            return []
-        return [l.strip() for l in path.read_text().splitlines() if l.strip()]
-
-    def _save_peer(self, addr: str):
-        """Append a peer to the known peers file (dedup)."""
-        path = self.data_dir / KNOWN_PEER_FILE
-        existing = set(self._load_known_peer())
-        if addr not in existing:
-            with open(path, "a") as f:
-                f.write(addr + "\n")
-
     async def run(self):
-        """Run the node (start + wait forever)."""
         await self.start()
         try:
-            await asyncio.Event().wait()  # Run until cancelled
+            await asyncio.Event().wait()
         except asyncio.CancelledError:
             pass
         finally:
             await self.stop()
+
+    def _on_remote_experiment(
+        self, record: ExperimentRecord, source_addr: str | None = None
+    ):
+        record.task_id = self._normalize_task_id(record)
+        if not self._accept_lineage(record):
+            log.warning("Rejected experiment %s: invalid task lineage", record.id[:8])
+            return
+        inserted = self.graph.insert(record)
+        if not inserted:
+            return
+        self._register_task_for_record(record)
+        self.reputation.record_published(record.node_id, record)
+        if source_addr and self.store.get(record.code_cid) is None:
+            self.artifact.prefetch(self, record.code_cid, preferred_peer=source_addr)
+        if self.workspace:
+            self.challenger.on_experiment_received(record)
+        self._notify_listeners(record)
+
+    def _on_sync_request(self, since_timestamp: int) -> list[ExperimentRecord]:
+        return [
+            record
+            for record in self.graph.all_records()
+            if record.timestamp >= since_timestamp
+        ]
+
+    def _on_control_sync_request(
+        self, since_timestamp: int
+    ) -> list[SignedControlEvent]:
+        return self.control.list_since(since_timestamp)
+
+    def _on_remote_control_event(self, event: SignedControlEvent):
+        self.control.store(event)
+
+    def _on_remote_profile(self, profile: NodeProfile):
+        self.profile.upsert(profile)
+
+    def _on_remote_task(self, manifest: TaskManifest):
+        self.task.upsert_manifest(manifest)
+        if not self.active_task_id:
+            self.active_task_id = manifest.task_id
+
+    def _on_task_sync_request(self, since_timestamp: int) -> list[TaskManifest]:
+        return self.task.list_since(since_timestamp)
+
+    def _on_code_request(self, code_cid: str) -> bytes | None:
+        return self.store.get(code_cid)
+
+    def _normalize_task_id(
+        self, record: ExperimentRecord, *, local_publish: bool = False
+    ) -> str:
+        if record.task_id:
+            return record.task_id
+        if record.parent:
+            parent = self.graph.get(record.parent)
+            if parent is not None and parent.task_id:
+                return parent.task_id
+        if record.parent is None:
+            if local_publish:
+                return self.active_task_id or record.id
+            return record.id
+        return self.active_task_id if local_publish else ""
+
+    def _accept_lineage(
+        self, record: ExperimentRecord, *, local_publish: bool = False
+    ) -> bool:
+        if not record.task_id:
+            return False
+        if record.parent:
+            parent = self.graph.get(record.parent)
+            return parent is None or parent.task_id == record.task_id
+        roots = self.graph.root_ids_by_task(record.task_id)
+        if roots:
+            return record.id in roots
+        existing = self.graph.by_task(record.task_id)
+        return not existing if local_publish else len(existing) == 0
+
+    def _register_task_for_record(self, record: ExperimentRecord):
+        if record.parent is None and record.task_id:
+            self.task.ensure_legacy_task(record.task_id, record)
+
+    def _backfill_tasks(self):
+        task_by_record = self.graph.backfill_task_ids()
+        for record in self.graph.all_records():
+            record.task_id = task_by_record.get(record.id, record.task_id)
+            if record.parent is None and record.task_id:
+                self.task.ensure_legacy_task(record.task_id, record)
+
+    def _auto_select_task(self) -> str:
+        task_ids = self.graph.all_task_ids()
+        if not task_ids:
+            return ""
+        scored = []
+        for task_id in task_ids:
+            recent = self.graph.recent_by_task(task_id, limit=25)
+            latest = max((record.timestamp for record in recent), default=0)
+            keep_count = sum(
+                1
+                for record in recent
+                if (
+                    record.status.value
+                    if hasattr(record.status, "value")
+                    else record.status
+                )
+                == "keep"
+            )
+            scored.append((len(recent), keep_count, latest, task_id))
+        scored.sort(reverse=True)
+        return scored[0][3]
+
+    def _notify_listeners(self, record: ExperimentRecord):
+        for callback in self._listeners:
+            try:
+                callback(record)
+            except Exception:
+                log.exception("Listener callback failed")
+
+    def _load_known_peer(self) -> list[str]:
+        path = self.data_dir / KNOWN_PEER_FILE
+        if not path.exists():
+            return []
+        return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+    def _save_peer(self, addr: str):
+        path = self.data_dir / KNOWN_PEER_FILE
+        existing = set(self._load_known_peer())
+        if addr not in existing:
+            with open(path, "a") as handle:
+                handle.write(addr + "\n")
+
+    @staticmethod
+    def _detect_gpu() -> str:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return normalize_gpu_model(torch.cuda.get_device_name(0))
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                return "APPLE_MPS"
+        except ImportError:
+            pass
+        return "CPU"
+
+    def _load_identity(self) -> tuple[SigningKey, str]:
+        key_path = self.data_dir / "identity" / "private_key"
+        if key_path.exists():
+            key = SigningKey(bytes.fromhex(key_path.read_text().strip()))
+            node_id = key.verify_key.encode(encoder=HexEncoder).decode("ascii")
+            return key, node_id
+        key, node_id = generate_keypair()
+        key_path.write_text(key.encode(encoder=HexEncoder).decode("ascii"))
+        (self.data_dir / "identity" / "node_id").write_text(node_id)
+        return key, node_id

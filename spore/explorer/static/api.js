@@ -15,17 +15,24 @@ function buildQuery(params = {}) {
   return query ? `?${query}` : '';
 }
 
-export async function getStat() {
-  return fetchJson('/api/stat');
+export async function getStat(params = {}) {
+  return fetchJson(`/api/stat${buildQuery(params)}`);
 }
 
-export async function getGraph() {
-  return fetchJson('/api/graph');
+export async function getTasks() {
+  return fetchJson('/api/tasks');
 }
 
-export async function getFrontier(gpu) {
-  const url = gpu ? `/api/frontier?gpu=${encodeURIComponent(gpu)}` : '/api/frontier';
-  return fetchJson(url);
+export async function getTask(taskId) {
+  return fetchJson(`/api/task/${taskId}`);
+}
+
+export async function getGraph(params = {}) {
+  return fetchJson(`/api/graph${buildQuery(params)}`);
+}
+
+export async function getFrontier(params = {}) {
+  return fetchJson(`/api/frontier${buildQuery(params)}`);
 }
 
 export async function getExperiment(cid) {
@@ -40,8 +47,8 @@ export async function getChildren(cid) {
   return fetchJson(`/api/experiment/${cid}/children`);
 }
 
-export async function getRecent(limit = 50) {
-  return fetchJson(`/api/recent?limit=${limit}`);
+export async function getRecent(limit = 50, params = {}) {
+  return fetchJson(`/api/recent${buildQuery({ limit, ...params })}`);
 }
 
 export async function getNodes(params = {}) {
@@ -61,21 +68,13 @@ export async function getNodeExperiment(nodeId, params = {}) {
   return fetchJson(`/api/node/${nodeId}/experiment${buildQuery(params)}`);
 }
 
-export async function getNodeReputation(nodeId) {
-  return fetchJson(`/api/node/${nodeId}/reputation`);
-}
-
 export async function getNodeProfile(nodeId) {
   return fetchJson(`/api/node/${nodeId}/profile`);
 }
 
-export async function searchExperiment(query) {
+export async function searchExperiment(query, params = {}) {
   if (!query || query.length < 2) return [];
-  return fetchJson(`/api/search?q=${encodeURIComponent(query)}`);
-}
-
-export async function getLeaderboard() {
-  return fetchJson('/api/leaderboard');
+  return fetchJson(`/api/search${buildQuery({ q: query, ...params })}`);
 }
 
 export async function getArtifact(cid) {
