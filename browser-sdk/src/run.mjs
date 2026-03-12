@@ -1,5 +1,5 @@
 import { createArtifact } from "./artifact.mjs";
-import { getChallenge } from "./challenge.mjs";
+import { getChallenge, getChallengeLeaderboard } from "./challenge.mjs";
 import { createBrowserLLMClient } from "./llm.mjs";
 import { heartbeatBrowserNode } from "./node.mjs";
 import { createSubmission, normalizeSubmissionPayload } from "./submission.mjs";
@@ -73,6 +73,20 @@ async function submitArtifacts(apiKey, submissionId, artifacts, baseUrl) {
   return created;
 }
 
+async function currentLeaderSubmissionId(challengeId, baseUrl) {
+  const leaderboard = await getChallengeLeaderboard(challengeId, { baseUrl });
+  return leaderboard?.[0]?.id || null;
+}
+
+async function resolveParentSubmissionId(options, challengeId, baseUrl) {
+  if (typeof options.getParentSubmissionId === "function") {
+    const selected = await options.getParentSubmissionId();
+    if (selected) return selected;
+  }
+  if (options.parentSubmissionId) return options.parentSubmissionId;
+  return currentLeaderSubmissionId(challengeId, baseUrl);
+}
+
 export function getBrowserClientStatus(options = {}) {
   const store = options.store || createMemoryStore();
   const config = store.load();
@@ -136,6 +150,10 @@ export async function runBrowserClient(options = {}) {
         llm,
         iteration,
         previousSubmissionId: state.last_submission_id || null,
+        steeringPrompt:
+          (typeof options.getSteeringPrompt === "function"
+            ? await options.getSteeringPrompt()
+            : options.steeringPrompt) || "",
         context,
         signal: options.signal,
       });
@@ -144,7 +162,12 @@ export async function runBrowserClient(options = {}) {
       payload.challenge_id = challenge.id;
       payload.node_id = config.default_node_id;
       payload.parent_submission_id =
-        payload.parent_submission_id || state.last_submission_id || null;
+        payload.parent_submission_id ||
+        (await resolveParentSubmissionId(
+          options,
+          challenge.id,
+          options.baseUrl || config.base_url,
+        ));
       const submission = await createSubmission(
         config.api_key,
         payload,
@@ -161,7 +184,10 @@ export async function runBrowserClient(options = {}) {
         paused: false,
         iteration,
         last_submission_id: submission.id || "",
+        last_parent_submission_id: submission.parent_submission_id || payload.parent_submission_id || "",
         last_status: submission.status || payload.status,
+        last_metric: submission.metric_value ?? payload.metric_value ?? null,
+        last_validation_note: submission.validation_note || "",
         last_error: "",
       });
       if (typeof options.onEvent === "function") {
@@ -171,7 +197,11 @@ export async function runBrowserClient(options = {}) {
       const crashPayload = normalizeSubmissionPayload({
         challenge_id: challenge.id,
         node_id: config.default_node_id,
-        parent_submission_id: state.last_submission_id || null,
+        parent_submission_id: await resolveParentSubmissionId(
+          options,
+          challenge.id,
+          options.baseUrl || config.base_url,
+        ),
         status: "crash",
         title: "Browser run crashed",
         description: error?.message || String(error),
@@ -191,7 +221,11 @@ export async function runBrowserClient(options = {}) {
         paused: false,
         iteration,
         last_submission_id: submission.id || "",
+        last_parent_submission_id:
+          submission.parent_submission_id || crashPayload.parent_submission_id || "",
         last_status: "crash",
+        last_metric: null,
+        last_validation_note: submission.validation_note || "",
         last_error: error?.message || String(error),
       });
       if (typeof options.onEvent === "function") {

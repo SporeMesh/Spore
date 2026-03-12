@@ -78,12 +78,19 @@ export function createBrowserClient(options = {}) {
         { baseUrl: queryOptions.baseUrl || config.base_url },
       );
     },
-    registerNode(nodeOptions = {}) {
+    async registerNode(nodeOptions = {}) {
       const config = store.load();
-      return registerBrowserNode(config.api_key, {
+      const node = await registerBrowserNode(config.api_key, {
         baseUrl: nodeOptions.baseUrl || config.base_url,
         ...nodeOptions,
       });
+      store.save({
+        default_node_id: node.id || config.default_node_id || "",
+        default_node_public_id:
+          node.node_public_id || config.default_node_public_id || "",
+        default_node_label: node.label || config.default_node_label || "",
+      });
+      return node;
     },
     heartbeat(nodeOptions = {}) {
       const config = store.load();

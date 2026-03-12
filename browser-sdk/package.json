@@ -1,6 +1,6 @@
 {
   "name": "@sporemesh/browser",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "description": "Browser SDK for Spore challenge init, run loops, automatic submission, and browser-safe challenge adapters.",
   "main": "./src/index.mjs",

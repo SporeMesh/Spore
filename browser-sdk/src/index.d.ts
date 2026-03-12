@@ -38,6 +38,8 @@ export interface BrowserRunState {
   iteration?: number;
   last_submission_id?: string;
   last_status?: SubmissionStatus;
+  last_metric?: number | null;
+  last_validation_note?: string;
   last_error?: string;
   updated_at?: string;
   [key: string]: any;
@@ -89,6 +91,7 @@ export interface BrowserAdapterContext {
   llm: any;
   iteration?: number;
   previousSubmissionId?: string | null;
+  steeringPrompt?: string;
   context?: any;
   signal?: AbortSignal;
 }
@@ -102,6 +105,10 @@ export interface BrowserRunOptions {
   intervalMs?: number;
   maxIterations?: number;
   challengeId?: string;
+  parentSubmissionId?: string | null;
+  getParentSubmissionId?(): string | null | Promise<string | null>;
+  steeringPrompt?: string;
+  getSteeringPrompt?(): string | Promise<string>;
   llmProvider?: string;
   llmApiKey?: string;
   llmModel?: string;
