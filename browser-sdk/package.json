@@ -1,0 +1,27 @@
+{
+  "name": "@sporemesh/browser",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser SDK for Spore challenge onboarding, auth, node registration, and browser-runtime gating.",
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "spore",
+    "browser",
+    "sdk",
+    "wallet",
+    "challenge"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "viem": "^2.47.1"
+  }
+}

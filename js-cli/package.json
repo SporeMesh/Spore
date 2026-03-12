@@ -1,0 +1,23 @@
+{
+  "name": "@sporemesh/cli",
+  "version": "0.6.3",
+  "type": "module",
+  "bin": {
+    "spore": "./bin/spore.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "start": "node ./bin/spore.mjs",
+    "check": "node ./bin/spore.mjs challenge list"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "commander": "^14.0.1",
+    "viem": "^2.38.5"
+  }
+}

@@ -26,6 +26,8 @@ result.tsv
 
 # Publish
 publish.sh
+.npm-cache/
+node_modules/
 
 # OS
 .DS_Store

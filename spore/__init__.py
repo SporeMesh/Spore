@@ -1,3 +1,3 @@
-"""Spore — Decentralized AI Research Protocol."""
+"""Spore Mesh client and optional legacy node runtime."""
 
-__version__ = "0.1.0"
+__version__ = "0.6.2"

@@ -5,17 +5,10 @@ description = "Decentralized AI research protocol — BitTorrent for ML experime
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pynacl>=1.5",
-    "rich>=13.0",
     "click>=8.1",
-    "torch>=2.9",
-    "numpy>=1.24",
-    "pyarrow>=21.0.0",
     "requests>=2.32.0",
-    "rustbpe>=0.1.0",
-    "tiktoken>=0.11.0",
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.34",
+    "rich>=13.0",
+    "eth-account>=0.13.7",
 ]
 
 [project.urls]
@@ -23,16 +16,24 @@ Homepage = "https://github.com/SporeMesh/Spore"
 Repository = "https://github.com/SporeMesh/Spore"
 
 [project.optional-dependencies]
-cuda = [
-    "kernels>=0.11.7",
+node = [
+    "pynacl>=1.5",
+    "torch>=2.9",
+    "numpy>=1.24",
+    "pyarrow>=21.0.0",
+    "rustbpe>=0.1.0",
+    "tiktoken>=0.11.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
 ]
+cuda = ["kernels>=0.11.7"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
 
 [project.scripts]
-spore = "spore.cli:main"
+spore = "spore.client_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["spore*"]
