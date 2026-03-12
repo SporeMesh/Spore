@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { hostname } from "node:os";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { Command } from "commander";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { ApiError, request } from "./api.mjs";
 import { loadConfig, saveConfig, updateConfig } from "./config.mjs";
 import { pickDefaultChallenge } from "./challenge.mjs";
 import { detectNodeProfile } from "./detect.mjs";
+
+const execFileAsync = promisify(execFile);
 
 async function parseJson(text, file) {
   if (text) return JSON.parse(text);
@@ -20,6 +24,19 @@ function print(data) {
 
 function defaultNodePublicId() {
   return `${hostname().split(".")[0]}-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+}
+
+async function openUrl(url) {
+  const platform = process.platform;
+  if (platform === "darwin") {
+    await execFileAsync("open", [url]);
+    return;
+  }
+  if (platform === "win32") {
+    await execFileAsync("cmd", ["/c", "start", "", url]);
+    return;
+  }
+  await execFileAsync("xdg-open", [url]);
 }
 
 async function login(privateKey, baseUrl) {
@@ -76,7 +93,7 @@ async function initClient({ privateKey, baseUrl, nodePublicId, label, challengeI
     cpu_model: detected.cpu_model || null,
     memory_gb: detected.memory_gb || null,
     platform: detected.platform || null,
-    software_version: "0.6.2",
+    software_version: "0.6.4",
     metadata_jsonb: detected.metadata_jsonb,
   };
   const node = await request("POST", "/api/v1/node/register", { auth: true, json: payload });
@@ -120,8 +137,8 @@ export async function run(argv) {
     .option("--label <label>", "Human-readable node label")
     .option("--challenge-id <id>", "Pin a default challenge instead of auto-selecting")
     .option("--force-new-wallet", "Generate and save a fresh local wallet")
-    .option("--llm-provider <name>", "LLM provider for local autoresearch", "groq")
-    .option("--llm-api-key <key>", "LLM API key for local autoresearch")
+    .option("--llm-provider <name>", "LLM provider for local challenge runtime", "groq")
+    .option("--llm-api-key <key>", "LLM API key for local challenge runtime")
     .option("--llm-model <name>", "Optional LLM model override")
     .action(async (options) => initClient(options));
 
@@ -161,6 +178,19 @@ export async function run(argv) {
     const challengeData = await request("GET", `/api/v1/challenge/${challengeId}`);
     print(await updateConfig({ default_challenge_id: challengeData.id, default_challenge_slug: challengeData.slug || "" }));
   });
+  program
+    .command("play")
+    .option("--challenge-id <id>", "Open the browser arena for a specific challenge")
+    .option("--open", "shouldOpen", "Open the arena URL in your default browser")
+    .action(async ({ challengeId, shouldOpen }) => {
+      const config = await loadConfig();
+      const target = challengeId || config.default_challenge_id;
+      const url = target
+        ? `https://www.sporemesh.com/play?challenge_id=${target}`
+        : "https://www.sporemesh.com/play";
+      if (shouldOpen) await openUrl(url);
+      console.log(url);
+    });
 
   const node = program.command("node");
   node

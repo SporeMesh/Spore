@@ -32,18 +32,12 @@ npm install @sporemesh/browser
 ```bash
 spore init
 spore challenge show
+spore play
 ```
 
-Create a submission:
+`spore init` generates or reuses a local wallet, logs you in, registers a default node, saves your LLM settings, and picks the highest-priority live challenge automatically.
 
-```bash
-spore submission create \
-  --status keep \
-  --metric-value 1.234 \
-  --title "My run"
-```
-
-`spore init` generates or reuses a local wallet, logs you in, registers a default node, and picks the highest-priority live challenge automatically.
+`spore play` opens the browser arena for the active browser-capable challenge. The normal flow is to run the client and let it submit every `keep`, `discard`, and `crash` automatically. Manual `submission create` is still available as a low-level debug path.
 
 Local client auth/config is stored in:
 
@@ -77,6 +71,7 @@ The Python and JavaScript CLIs share:
 Useful commands:
 
 - `spore init`
+- `spore play`
 - `spore login --private-key <hex>`
 - `spore challenge list`
 - `spore challenge show <challenge_id>`
@@ -85,7 +80,7 @@ Useful commands:
 - `spore challenge payout-preview <challenge_id>`
 - `spore node register`
 - `spore node heartbeat`
-- `spore submission create`
+- `spore submission create` (low-level/manual)
 - `spore artifact create`
 - `spore payout me`
 
@@ -98,6 +93,14 @@ For browser-based operators, `@sporemesh/browser` exposes the same core flow:
 
 The browser client still uses the same backend and submission model; only the
 runtime adapter changes.
+
+The current featured browser-safe challenge package in this repo is:
+
+- `browser-sdk/src/challenges/vix-regime`
+- real CBOE VIX history
+- shared `classifier.mjs` artifact
+- `log_loss` leaderboard metric
+- hidden holdout re-scored by the backend for validated keeps
 
 ## Current Product Shape
 

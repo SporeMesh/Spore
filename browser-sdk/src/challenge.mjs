@@ -37,5 +37,5 @@ export function challengeRuntime(challenge) {
 }
 
 export function supportsBrowserRuntime(challenge) {
-  return challengeRuntime(challenge) === "browser";
+  return ["browser", "universal"].includes(challengeRuntime(challenge));
 }

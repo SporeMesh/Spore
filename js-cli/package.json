@@ -1,7 +1,8 @@
 {
   "name": "@sporemesh/cli",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "type": "module",
+  "description": "JavaScript CLI for Spore machine challenges",
   "bin": {
     "spore": "./bin/spore.mjs"
   },

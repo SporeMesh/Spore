@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 import socket
 import uuid
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -59,8 +60,8 @@ def login(private_key: str, base_url: str | None) -> None:
 @click.option("--label", default=None, help="Human-readable node label override")
 @click.option("--challenge-id", default=None, help="Pin a default challenge instead of auto-selecting")
 @click.option("--force-new-wallet", is_flag=True, help="Generate and save a fresh local wallet")
-@click.option("--llm-provider", default="groq", help="LLM provider for local autoresearch")
-@click.option("--llm-api-key", envvar="SPORE_LLM_API_KEY", default=None, help="LLM API key for local autoresearch")
+@click.option("--llm-provider", default="groq", help="LLM provider for local challenge runtime")
+@click.option("--llm-api-key", envvar="SPORE_LLM_API_KEY", default=None, help="LLM API key for local challenge runtime")
 @click.option("--llm-model", default=None, help="Optional LLM model override")
 def init(
     private_key: str | None,
@@ -162,6 +163,21 @@ def challenge_payout_preview(challenge_id: str | None) -> None:
 def challenge_use(challenge_id: str) -> None:
     challenge = BackendClient().get(f"/api/v1/challenge/{challenge_id}")
     _print(update_config(default_challenge_id=challenge["id"], default_challenge_slug=challenge.get("slug", "")))
+
+
+@cli.command("play")
+@click.option("--challenge-id", default=None, help="Open the browser arena for a specific challenge")
+@click.option("--open", "should_open", is_flag=True, help="Open the arena URL in your default browser")
+def play(challenge_id: str | None, should_open: bool) -> None:
+    """Open the browser arena for a browser-capable challenge."""
+    config = load_config()
+    target = challenge_id or config.get("default_challenge_id")
+    url = "https://www.sporemesh.com/play"
+    if target:
+        url = f"{url}?challenge_id={target}"
+    if should_open:
+        webbrowser.open(url)
+    console.print(url)
 
 
 @cli.group()

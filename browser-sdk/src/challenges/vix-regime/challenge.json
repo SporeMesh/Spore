@@ -1,0 +1,11 @@
+{
+  "slug": "vix-regime-s1",
+  "title": "VIX Regime Classifier Sprint #1",
+  "metric": "log_loss",
+  "goal": "minimize",
+  "runtime": "universal",
+  "artifact_type": "javascript_source",
+  "entry_file": "classifier.mjs",
+  "public_train": "data/public-train.json",
+  "public_eval": "data/public-eval.json"
+}

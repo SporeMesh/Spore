@@ -36,3 +36,14 @@ export {
   getBrowserClientStatus,
 } from "./run.mjs";
 export { createBrowserClient } from "./client.mjs";
+export {
+  baselineClassifierSource,
+  createVixRegimeAdapter,
+  loadClassifier,
+  logLoss,
+  scoreClassifierSource,
+  datasetSummary as vixDatasetSummary,
+  VIX_LABELS,
+  VIX_PUBLIC_EVAL,
+  VIX_PUBLIC_TRAIN,
+} from "./challenges/vix-regime/index.mjs";
