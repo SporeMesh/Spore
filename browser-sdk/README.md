@@ -1,14 +1,17 @@
 # @sporemesh/browser
 
-Browser SDK for the live Spore API at `https://api.sporemesh.com`.
+Browser client SDK for the live Spore API at `https://api.sporemesh.com`.
 
-It gives you the thin browser client primitives:
+The browser client follows the same product contract as the Python and JS CLIs:
 
-- generate or import a wallet
-- authenticate against the Spore backend
-- auto-register a browser node
-- list challenges and pick a default challenge
-- detect whether a challenge can run in-browser
+- `init`
+- `run`
+- `pause`
+- `status`
+
+The only difference is runtime. In the browser, you provide a browser-safe runtime
+adapter that knows how to mutate and evaluate one experiment locally, while the
+SDK handles auth, node registration, automatic submission, and challenge state.
 
 ## Install
 
@@ -20,20 +23,49 @@ npm install @sporemesh/browser
 
 ```js
 import {
-  bootstrapBrowserClient,
+  createBrowserClient,
   createLocalStorageStore,
-  supportsBrowserRuntime,
 } from "@sporemesh/browser";
 
 const store = createLocalStorageStore();
+const client = createBrowserClient({ store });
 
-const result = await bootstrapBrowserClient({
-  store,
+await client.init({
+  llmProvider: "groq",
+  llmApiKey: "<your-key>",
 });
 
-console.log(result.config.walletAddress);
-console.log(result.challenge?.title);
-console.log(supportsBrowserRuntime(result.challenge));
+console.log(client.status().config.wallet_address);
+console.log(client.status().config.default_challenge_slug);
+```
+
+Run continuously with automatic submission:
+
+```js
+await client.run({
+  intervalMs: 1000,
+  adapter: {
+    async runExperiment({ llm, iteration, previousSubmissionId }) {
+      const reply = await llm.chat(
+        "You are improving a browser-safe challenge artifact.",
+        `Generate experiment ${iteration}. Previous submission: ${previousSubmissionId || "none"}.`,
+      );
+      return {
+        status: "discard",
+        title: `Browser attempt ${iteration}`,
+        description: reply.slice(0, 200),
+        metadata_jsonb: { runtime: "browser" },
+      };
+    },
+  },
+});
+```
+
+Pause and inspect state:
+
+```js
+client.pause();
+console.log(client.status());
 ```
 
 ## Main exports
@@ -43,7 +75,9 @@ console.log(supportsBrowserRuntime(result.challenge));
 - `authenticateBrowserWallet(privateKey, options?)`
 - `createLocalStorageStore(key?)`
 - `createMemoryStore(initial?)`
+- `initBrowserClient(options)`
 - `bootstrapBrowserClient(options)`
+- `createBrowserClient(options?)`
 - `listChallenges(options?)`
 - `getChallenge(challengeId, options?)`
 - `getChallengeLeaderboard(challengeId, options?)`
@@ -53,9 +87,22 @@ console.log(supportsBrowserRuntime(result.challenge));
 - `supportsBrowserRuntime(challenge)`
 - `detectBrowserNodeProfile(nodePublicId?)`
 - `registerBrowserNode(apiKey, options?)`
+- `heartbeatBrowserNode(apiKey, options?)`
+- `createBrowserLLMClient(config, overrides?)`
+- `runBrowserClient(options)`
+- `pauseBrowserClient(options?)`
+- `getBrowserClientStatus(options?)`
+- `createSubmission(apiKey, payload, options?)`
+- `listSubmissions(challengeId, apiKey, options?)`
+- `getSubmission(submissionId, apiKey, options?)`
+- `getSubmissionLineage(challengeId, submissionId, apiKey, options?)`
+- `createArtifact(apiKey, payload, options?)`
+- `listArtifacts(submissionId, apiKey, options?)`
 
 ## Notes
 
-- The SDK stores or reads wallet/API-key state only through the storage adapter you provide.
+- The SDK stores or reads wallet, API key, LLM settings, and run state only through
+  the storage adapter you provide.
 - Browser node metadata is informational only.
-- The current featured challenge may still require local compute. Use `supportsBrowserRuntime` to gate the in-browser run button.
+- `run()` submits every experiment result: `keep`, `discard`, or `crash`.
+- The adapter decides how an experiment is mutated and evaluated in-browser.

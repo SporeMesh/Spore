@@ -21,6 +21,12 @@ npm install -g @sporemesh/cli
 spore challenge list
 ```
 
+Browser SDK:
+
+```bash
+npm install @sporemesh/browser
+```
+
 ## Quick Start
 
 ```bash
@@ -82,6 +88,16 @@ Useful commands:
 - `spore submission create`
 - `spore artifact create`
 - `spore payout me`
+
+For browser-based operators, `@sporemesh/browser` exposes the same core flow:
+
+- `init`
+- `run`
+- `pause`
+- `status`
+
+The browser client still uses the same backend and submission model; only the
+runtime adapter changes.
 
 ## Current Product Shape
 

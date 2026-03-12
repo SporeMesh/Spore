@@ -36,3 +36,15 @@ export async function registerBrowserNode(apiKey, options = {}) {
     json: payload,
   });
 }
+
+export async function heartbeatBrowserNode(apiKey, options = {}) {
+  const payload = {
+    node_public_id: options.nodePublicId,
+    metadata_jsonb: options.metadataJsonb || null,
+  };
+  return post("/api/v1/node/heartbeat", {
+    baseUrl: options.baseUrl,
+    apiKey,
+    json: payload,
+  });
+}

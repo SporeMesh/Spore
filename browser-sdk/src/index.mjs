@@ -11,6 +11,7 @@ export {
   createNodePublicId,
   detectBrowserNodeProfile,
   registerBrowserNode,
+  heartbeatBrowserNode,
 } from "./node.mjs";
 export { createMemoryStore, createLocalStorageStore } from "./storage.mjs";
 export {
@@ -19,4 +20,19 @@ export {
   importBrowserWallet,
   authenticateBrowserWallet,
 } from "./wallet.mjs";
-export { bootstrapBrowserClient } from "./bootstrap.mjs";
+export { createBrowserLLMClient, resolveLLMConfig } from "./llm.mjs";
+export { initBrowserClient, bootstrapBrowserClient } from "./init.mjs";
+export {
+  createSubmission,
+  listSubmissions,
+  getSubmission,
+  getSubmissionLineage,
+  normalizeSubmissionPayload,
+} from "./submission.mjs";
+export { createArtifact, listArtifacts } from "./artifact.mjs";
+export {
+  runBrowserClient,
+  pauseBrowserClient,
+  getBrowserClientStatus,
+} from "./run.mjs";
+export { createBrowserClient } from "./client.mjs";
